@@ -1,0 +1,8 @@
+pyrogram
+tgcrypto
+python-dotenv
+motor
+httpx
+aiohttp
+Babel # (still optional)
+pymongo[srv]
