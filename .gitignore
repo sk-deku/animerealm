@@ -1,22 +1,25 @@
-# Byte-code files
-*.pyc
-__pycache__/
-
-# Environment variables
+# Ignore sensitive environment variables
 .env
 
-# Python venv/virtualenv
-.venv/
+# Ignore Python bytecode
+*.pyc
+__pycache__
 venv/
+.venv/
 
-# Test/coverage reports
+# Ignore dependencies directory
+/deps
+
+# Ignore build artifacts
+dist/
+build/
+
+# Ignore coverage reports
 .coverage
 htmlcov/
 
-# Specific libraries/packages
-dist/
-build/
-*.egg-info/
-
-# Docker related files (optional)
-*.log
+# Ignore editor-specific files (add yours)
+.vscode/
+.idea/
+*.swp
+*.swo
