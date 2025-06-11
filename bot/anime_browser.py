@@ -29,7 +29,7 @@ def build_pagination_keyboard(current_page: int, total_pages: int, callback_data
 
 # --- Display Anime Details, Seasons, Episodes, Versions (Core Display Logic) ---
 
-async def display_anime_details_and_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, anime_doc: dict, came_from_ watchlist: bool = False):
+async def display_anime_details_and_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, anime_doc: dict, came_from_watchlist: bool = False):
     """
     Displays the core details of an anime and main action buttons.
     This will be called after an anime is selected from search, browse, watchlist etc.
