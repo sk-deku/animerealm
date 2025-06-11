@@ -5,6 +5,7 @@ from pymongo.errors import ConnectionFailure, OperationFailure, ConfigurationErr
 from datetime import datetime, timedelta, date as DateObject # Import date separately
 import pytz # For timezone-aware datetime objects
 from bson import ObjectId # For querying by ObjectId
+from typing import Optional, List, Dict
 from pydantic import ValidationError # To catch Pydantic validation errors
 
 from configs import settings
