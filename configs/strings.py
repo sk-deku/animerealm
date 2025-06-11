@@ -1,4 +1,5 @@
 # configs/strings.py
+from configs import settings
 
 # --- Emojis (reuse for consistency) ---
 EMOJI_WELCOME = "🎉"
