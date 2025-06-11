@@ -1,7 +1,5 @@
-### FILENAME: `database/mongo_db.py`
-
-```python
 # database/mongo_db.py
+
 import logging
 from pymongo import MongoClient, ReturnDocument, errors as mongo_errors
 from pymongo.operations import UpdateOne
@@ -11,6 +9,92 @@ import pytz # For timezone-aware datetime objects if needed, especially for expi
 from configs import settings
 
 logger = logging.getLogger(__name__)
+
+class Database:
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            cls._instance = super(Database, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        if not hasattr(self, 'client'): # Ensure __init__ runs only once for the singleton
+            logger.info("Initializing MongoDB connection...")
+            try:
+                self.client = MongoClient(settings.DATABASE_URL)
+                # Ping the server to verify connection
+                self.client.admin.command('ping')
+                logger.info("✅ MongoDB connection successful!")
+                self.db = self.client[settings.DATABASE_NAME]
+
+                # Collections
+                self.users_collection = self.db["users"]
+                self.anime_collection = self.db["anime"]
+                self.requests_collection = self.db["requests"] # Still useful for admin tracking
+                self.referral_codes_collection = self.db["generated_referral_codes"]
+
+                self._create_indexes()
+            except ConnectionFailure as e:
+                logger.critical(f"❌ MongoDB connection failed: {e}")
+                # Depending on your error handling strategy, you might exit or raise a custom error
+                raise SystemExit("MongoDB connection failed. Bot cannot operate.") from e
+            except ConfigurationError as e:
+                logger.critical(f"❌ MongoDB configuration error: {e}. Check your DATABASE_URL.")
+                raise SystemExit("MongoDB configuration error. Bot cannot operate.") from e
+            except Exception as e: # Catch any other potential exceptions during init
+                logger.critical(f"❌ An unexpected error occurred during MongoDB initialization: {e}")
+                raise SystemExit("Unexpected error during MongoDB init.") from e
+
+
+    def _create_indexes(self):
+        """Creates necessary indexes if they don't already exist."""
+        logger.info("Ensuring database indexes...")
+        try:
+            # Users Collection
+            self.users_collection.create_index([("telegram_id", ASCENDING)], unique=True, name="telegram_id_idx")
+            self.users_collection.create_index([("premium_status", ASCENDING)], name="premium_status_idx")
+            self.users_collection.create_index([("download_tokens", DESCENDING)], name="download_tokens_idx") # For potential leaderboards
+
+            # Anime Collection
+            self.anime_collection.create_index([("title_english", "text")], name="title_english_text_idx_v2", default_language="english") # Text index for fuzzy search
+            self.anime_collection.create_index([("genres", ASCENDING)], name="genres_idx")
+            self.anime_collection.create_index([("status", ASCENDING)], name="status_idx")
+            self.anime_collection.create_index([("release_year", DESCENDING)], name="release_year_idx")
+            self.anime_collection.create_index([("added_date", DESCENDING)], name="added_date_idx") # For 'latest'
+            self.anime_collection.create_index([("download_count", DESCENDING)], name="download_count_idx") # For 'popular'
+            # Index for anime title specifically for exact match or prefix search if text search is too broad
+            self.anime_collection.create_index([("title_english", ASCENDING)], name="title_english_asc_idx")
+
+
+            # Referral Codes Collection
+            self.referral_codes_collection.create_index([("referral_code", ASCENDING)], unique=True, name="referral_code_idx")
+            self.referral_codes_collection.create_index([("creator_user_id", ASCENDING)], name="creator_user_id_idx")
+            self.referral_codes_collection.create_index([("expiry_date", ASCENDING)], name="ref_code_expiry_idx")
+            self.referral_codes_collection.create_index([("is_claimed", ASCENDING)], name="ref_code_claimed_idx")
+
+            # Requests Collection (if used beyond logging channel)
+            self.requests_collection.create_index([("user_telegram_id", ASCENDING)], name="req_user_id_idx")
+            self.requests_collection.create_index([("status", ASCENDING)], name="req_status_idx")
+            self.requests_collection.create_index([("request_date", DESCENDING)], name="req_date_idx")
+
+            logger.info("✅ Database indexes ensured.")
+        except OperationFailure as e:
+            logger.error(f"⚠️ Error creating indexes: {e}. This might happen if indexes already exist with different options, or due to permissions.")
+        except Exception as e:
+            logger.error(f"⚠️ An unexpected error occurred during index creation: {e}")
+
+
+
+
+---
+
+
+
+
+
+
+
 
 # --- Database Connection ---
 try:
