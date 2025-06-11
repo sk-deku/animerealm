@@ -175,8 +175,8 @@ PREMIUM_CONTACT_INSTRUCTION = f"\n💬 To purchase, please contact our admin: @{
 
 # --- Anime Search & Browsing ---
 SEARCH_PROMPT = f"{EMOJI_SEARCH} Please enter the <b>English name</b> of the anime you want to search for:"
-SEARCH_NO_RESULTS = f"{EMOJI_ERROR} No anime found matching "<code>{{query}}</code>". Try a different name or browse our library."
-SEARCH_RESULTS_HEADER = f"{EMOJI_SEARCH} Search Results for "<code>{{query}}</code>" (Page {{current_page}}/{{total_pages}}):\n\n"
+SEARCH_NO_RESULTS = f'{EMOJI_ERROR} No anime found matching <code>{{query}}</code>. Try a different name or browse our library.'
+SEARCH_RESULTS_HEADER = f'{EMOJI_SEARCH} Search Results for <code>{{query}}</code> (Page {{current_page}}/{{total_pages}}):\n\n'
 SELECT_ANIME_PROMPT = "👇 Select an anime from the list to view details."
 
 BROWSE_MAIN_PROMPT = f"{EMOJI_BROWSE} How would you like to browse our anime library?"
