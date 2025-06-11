@@ -47,7 +47,7 @@ Use the buttons below or commands to navigate:
 /latest - Check out newly added episodes
 /my_watchlist - View your saved anime
 /profile - Check your tokens and premium status
-/get_tokens - Learn how to earn free tokens
+/get_tokens - earn free tokens
 /premium - Upgrade for exclusive benefits!
 """
 
@@ -62,7 +62,7 @@ Here are some commands you can use:
 <code>/latest</code> - Shows the most recently added episodes.
 <code>/my_watchlist</code> - Manages your personal watchlist.
 <code>/profile</code> - Shows your current token balance and premium status.
-<code>/get_tokens</code> - Explains how to earn tokens via referrals.
+<code>/get_tokens</code> - Earn tokens via shortened links.
 <code>/premium</code> - Displays premium membership options.
 <code>/cancel</code> - Cancels any ongoing operation (like adding content as an admin).
 
