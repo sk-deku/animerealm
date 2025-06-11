@@ -23,7 +23,7 @@ try:
     anime_collection = db["anime"]
     requests_collection = db["requests"] # If you decide to log requests to DB too
     generated_referral_codes_collection = db["generated_referral_codes"]
-fields)
+    
                 return {"new": False, "tokens_awarded": 0, "user_doc": user_data} # No tokens awarded for existing user login
             except Exception as e:
                 logger.error(f"Error updating user {user_id}: {e}")
