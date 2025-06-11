@@ -47,9 +47,9 @@ SHORTENER_API_KEY = os.getenv("SHORTENER_API_KEY") # Your specific API key for t
 AVAILABLE_GENRES = [
     "Action ⚔️", "Adventure 🗺️", "Avant Garde 🎨", "Boys Love 👨‍❤️‍👨", "Cars 🚗",
     "Comedy 😂", "Drama 🎭", "Demons 👹", "Ecchi 👀", "Fantasy 🧙", "Game 🎮",
-    "Girls Love 👩‍❤️‍👩", "Gourmet 🍜", "Harem 💕", "Historical 🏯", "Horror 🧟",
+    "Girls Love 👩‍❤️‍👩", "Harem 💕", "Historical 🏯", "Horror 🧟",
     "Isekai ➡️🌍", "Josei 👠", "Kids 🧸", "Magic ✨", "Martial Arts 🥋",
-    "Mecha 🤖", "Military 🎖️", "Music 🎵", "Mystery ❓", "Parody 🤪", "Police 👮",
+    "Mecha 🤖", "Military 🎖️", "Music 🎵", "Mystery ❓", "Detective 👮",
     "Psychological 🧠", "Romance ❤️", "Reverse Harem 💞", "Samurai 🗡️", "School 🎓",
     "Sci-Fi 🚀", "Seinen 👔", "Shoujo 🌸", "Shoujo Ai 🌸👩‍❤️‍👩", "Shounen 🔥",
     "Shounen Ai 🔥👨‍❤️‍👨", "Slice of Life 🍰", "Space 🌌", "Sports 🏆",
@@ -59,13 +59,12 @@ AVAILABLE_GENRES = [
 AVAILABLE_STATUSES = [
     "Ongoing ▶️", "Completed ✅", "Movie 🎬", "OVA 📼", "Special ⭐", "Not Yet Aired ⏳"
 ]
-SUPPORTED_AUDIO_LANGUAGES = ["Japanese 🇯🇵", "English 🇬🇧", "Hindi 🇮🇳", "Other 🌐"]
+SUPPORTED_AUDIO_LANGUAGES = ["Tamil 🇮🇳", "Japanese 🇯🇵", "English 🇬🇧", "Hindi 🇮🇳"]
 SUPPORTED_SUB_LANGUAGES = [
-    "English 🇬🇧", "Spanish 🇪🇸", "Portuguese 🇵🇹", "French 🇫🇷", "German 🇩🇪",
-    "Italian 🇮🇹", "Russian 🇷🇺", "Arabic 🇸🇦", "Hindi 🇮🇳", "None 😶"
+    "Tamil 🇮🇳", "English 🇬🇧", "Hindi 🇮🇳", "None 😶"
 ]
-SUPPORTED_RESOLUTIONS = ["360p", "480p", "720p", "1080p", "BD 💎", "4K ✨"]
-PREMIUM_ONLY_RESOLUTIONS = ["1080p", "BD 💎", "4K ✨"]
+SUPPORTED_RESOLUTIONS = ["360p", "480p", "720p", "1080p", "2K 💎", "4K ✨"]
+PREMIUM_ONLY_RESOLUTIONS = ["1080p", "2K 💎", "4K ✨"]
 ANIME_POSTER_PLACEHOLDER_URL = os.getenv("ANIME_POSTER_PLACEHOLDER_URL", "https://via.placeholder.com/200x300.png?text=🖼️+No+Poster")
 
 # --- Token & Referral System ---
@@ -87,10 +86,10 @@ PREMIUM_PLANS_INR = {
     90: {"display_name": "💎 <b>Quarterly Radiance</b> 💎", "price_inr": 125, "savings_text": "<i>(Save ₹25!)</i>"},
     # Add more: duration_days: {display_name, price_inr, savings_text}
 }
-CONTACT_ADMIN_USERNAME_FOR_PREMIUM = os.getenv("CONTACT_ADMIN_USERNAME_FOR_PREMIUM", "YourAdminContact") # e.g., "RealmAdminSupport" without @
+CONTACT_ADMIN_USERNAME_FOR_PREMIUM = os.getenv("CONTACT_ADMIN_USERNAME_FOR_PREMIUM", "SK_DEKU_BOT") # e.g., "RealmAdminSupport" without @
 
 # --- UI/UX & Miscellaneous ---
-RESULTS_PER_PAGE_GENERAL = int(os.getenv("RESULTS_PER_PAGE_GENERAL", 5)) # For search, browse, watchlist etc.
+RESULTS_PER_PAGE_GENERAL = int(os.getenv("RESULTS_PER_PAGE_GENERAL", 10)) # For search, browse, watchlist etc.
 ANIME_LIST_BUTTONS_PER_ROW = int(os.getenv("ANIME_LIST_BUTTONS_PER_ROW", 1)) # Typically 1 for anime title buttons
 SEASON_LIST_BUTTONS_PER_ROW = int(os.getenv("SEASON_LIST_BUTTONS_PER_ROW", 2)) # E.g., S1, S2, S3
 EPISODE_LIST_BUTTONS_PER_ROW = int(os.getenv("EPISODE_LIST_BUTTONS_PER_ROW", 4)) # E.g., E1-E4 on one row
