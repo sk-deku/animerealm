@@ -3,10 +3,11 @@ import logging
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
-
+from . import watchlist # Add import
 from configs import settings, strings
 from database.mongo_db import db as anidb # Assuming anidb is your Database instance
 
+from . import anime_browser # Import the module
 # Import functions from other modules that will handle specific actions
 from .core_handlers import reply_with_main_menu, help_command # Re-show main menu or help
 from .user_cmds import profile_command, premium_info_command # Show profile or premium info
@@ -193,3 +194,56 @@ async def main_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     logger.warning(f"Unhandled callback_data: {callback_data} from user {user.id}")
     # Default behavior for unhandled callbacks could be an alert or just ignore.
     # await query.answer("This button doesn't do anything yet or is part of a different flow.", show_alert=True) # Can be noisy
+
+    elif callback_data.startswith("wl_add_"):
+        anime_id_to_add = callback_data.split("wl_add_", 1)[1]
+        await watchlist.add_to_watchlist_callback(update, context, anime_id_to_add) # Already had this
+        return
+    elif callback_data.startswith("wl_rem_list_"): # New one for direct removal from list
+        anime_id_to_remove = callback_data.split("wl_rem_list_", 1)[1]
+        await watchlist.remove_from_watchlist_list_view_callback(update, context, anime_id_to_remove)
+        return
+    elif callback_data.startswith("wl_rem_"): # Original remove, typically from anime details page
+        anime_id_to_remove = callback_data.split("wl_rem_", 1)[1]
+        # This will call remove_from_watchlist_callback with from_list_view=False (default)
+        await watchlist.remove_from_watchlist_callback(update, context, anime_id_to_remove)
+        return
+    # For pagination of watchlist
+    elif callback_data.startswith("page_watchlist_"):
+        page_num = int(callback_data.split("_")[-1])
+        await watchlist.view_watchlist_command(update, context, page_to_display=page_num)
+        return
+
+    elif callback_data.startswith("viewanime_"):
+        anime_id = callback_data.split("viewanime_",1)[1]
+        await anime_browser.display_anime_details_and_buttons(update, context, anime_id_str=anime_id)
+        return
+    elif callback_data.startswith("viewseasons_"):
+        anime_id = callback_data.split("viewseasons_",1)[1]
+        await anime_browser.display_anime_seasons(update, context, anime_id_str=anime_id)
+        return
+    elif callback_data.startswith("vieweps_"): # "vieweps_{anime_id}_{season_num}"
+        _, anime_id, s_num_str = callback_data.split("_")
+        await anime_browser.display_season_episodes(update, context, anime_id, int(s_num_str))
+        return
+    elif callback_data.startswith("viewvers_"): # "viewvers_{anime_id}_{s_num}_{ep_num}"
+        _, anime_id, s_num_str, ep_num_str = callback_data.split("_")
+        await anime_browser.display_episode_versions(update, context, anime_id, int(s_num_str), int(ep_num_str))
+        return
+    # For browse specific genre/status lists from browse_start_command menu
+    elif callback_data == "browse_select_genre_init":
+        await anime_browser.browse_select_genre_init(update, context)
+        return
+    elif callback_data.startswith("br_sel_genre_page_"): # Genre list pagination
+        page = int(callback_data.split("_")[-1])
+        await anime_browser.browse_select_genre_init(update, context, page=page)
+        return
+    elif callback_data.startswith("br_genre_"): # Selected a genre
+        await anime_browser.browse_by_genre_results(update, context) # Will parse genre from callback_data
+        return
+    elif callback_data == "browse_select_status_init":
+        await anime_browser.browse_select_status_init(update, context)
+        return
+    elif callback_data.startswith("br_status_"): # Selected a status
+        await anime_browser.browse_by_status_results(update, context) # Will parse status from callback_data
+        return
