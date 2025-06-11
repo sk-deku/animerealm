@@ -1,17 +1,30 @@
 # database/mongo_db.py
-
 import logging
-from pymongo import MongoClient, ReturnDocument, errors as mongo_errors
-from pymongo.operations import UpdateOne
-from datetime import datetime, timedelta
-import pytz # For timezone-aware datetime objects if needed, especially for expiry
+from pymongo import MongoClient, UpdateOne, ASCENDING, DESCENDING, ReturnDocument
+from pymongo.errors import ConnectionFailure, OperationFailure, ConfigurationError, DuplicateKeyError
+from datetime import datetime, timedelta, date as DateObject # Import date separately
+import pytz # For timezone-aware datetime objects
+from bson import ObjectId # For querying by ObjectId
+from pydantic import ValidationError # To catch Pydantic validation errors
 
 from configs import settings
+from .models import ( # Import your Pydantic models
+    User as UserModel,
+    Anime as AnimeModel,
+    Season as SeasonModel,
+    Episode as EpisodeModel,
+    FileVersion as FileVersionModel,
+    AnimeRequest as AnimeRequestModel,
+    GeneratedReferralCode as GeneratedReferralCodeModel
+)
 
+# Get a logger instance
 logger = logging.getLogger(__name__)
 
 class Database:
     _instance = None
+    # client: MongoClient = None # Type hint for client
+    # db = None # Type hint for db
 
     def __new__(cls, *args, **kwargs):
         if not cls._instance:
@@ -19,137 +32,146 @@ class Database:
         return cls._instance
 
     def __init__(self):
-        if not hasattr(self, 'client'): # Ensure __init__ runs only once for the singleton
+        if not hasattr(self, 'client'): # Ensure __init__ runs only once
             logger.info("Initializing MongoDB connection...")
             try:
-                self.client = MongoClient(settings.DATABASE_URL)
-                # Ping the server to verify connection
-                self.client.admin.command('ping')
+                self.client = MongoClient(settings.DATABASE_URL, appname="AnimeRealmBot") # appname for better logging on MongoDB side
+                self.client.admin.command('ping') # Verify connection
                 logger.info("✅ MongoDB connection successful!")
                 self.db = self.client[settings.DATABASE_NAME]
 
-                # Collections
                 self.users_collection = self.db["users"]
                 self.anime_collection = self.db["anime"]
-                self.requests_collection = self.db["requests"] # Still useful for admin tracking
+                self.requests_collection = self.db["anime_requests"] # Changed from "requests" to be more specific
                 self.referral_codes_collection = self.db["generated_referral_codes"]
+                # self.download_logs_collection = self.db["download_logs"] # If you implement download logging
 
                 self._create_indexes()
             except ConnectionFailure as e:
                 logger.critical(f"❌ MongoDB connection failed: {e}")
-                # Depending on your error handling strategy, you might exit or raise a custom error
-                raise SystemExit("MongoDB connection failed. Bot cannot operate.") from e
+                raise SystemExit("MongoDB connection error. Bot cannot operate.")
             except ConfigurationError as e:
-                logger.critical(f"❌ MongoDB configuration error: {e}. Check your DATABASE_URL.")
-                raise SystemExit("MongoDB configuration error. Bot cannot operate.") from e
-            except Exception as e: # Catch any other potential exceptions during init
-                logger.critical(f"❌ An unexpected error occurred during MongoDB initialization: {e}")
-                raise SystemExit("Unexpected error during MongoDB init.") from e
-
+                logger.critical(f"❌ MongoDB configuration error: {e}. Check DATABASE_URL.")
+                raise SystemExit("MongoDB configuration error.")
+            except Exception as e:
+                logger.critical(f"❌ Unexpected error during MongoDB init: {e}", exc_info=True)
+                raise SystemExit("Unexpected MongoDB init error.")
 
     def _create_indexes(self):
-        """Creates necessary indexes if they don't already exist."""
         logger.info("Ensuring database indexes...")
         try:
-            # Users Collection
             self.users_collection.create_index([("telegram_id", ASCENDING)], unique=True, name="telegram_id_idx")
             self.users_collection.create_index([("premium_status", ASCENDING)], name="premium_status_idx")
-            self.users_collection.create_index([("download_tokens", DESCENDING)], name="download_tokens_idx") # For potential leaderboards
+            self.users_collection.create_index([("watchlist", ASCENDING)], name="watchlist_anime_idx") # For finding users by watchlist item
+            self.users_collection.create_index([("last_active_date", DESCENDING)], name="user_last_active_idx")
 
-            # Anime Collection
-            self.anime_collection.create_index([("title_english", "text")], name="title_english_text_idx_v2", default_language="english") # Text index for fuzzy search
+            self.anime_collection.create_index([("title_english", "text")], name="title_english_text_idx", default_language="english")
+            self.anime_collection.create_index([("title_english", ASCENDING)], name="title_english_asc_idx")
             self.anime_collection.create_index([("genres", ASCENDING)], name="genres_idx")
             self.anime_collection.create_index([("status", ASCENDING)], name="status_idx")
             self.anime_collection.create_index([("release_year", DESCENDING)], name="release_year_idx")
-            self.anime_collection.create_index([("added_date", DESCENDING)], name="added_date_idx") # For 'latest'
-            self.anime_collection.create_index([("download_count", DESCENDING)], name="download_count_idx") # For 'popular'
-            # Index for anime title specifically for exact match or prefix search if text search is too broad
-            self.anime_collection.create_index([("title_english", ASCENDING)], name="title_english_asc_idx")
+            self.anime_collection.create_index([("last_content_update", DESCENDING)], name="anime_last_content_update_idx") # For 'latest'
+            self.anime_collection.create_index([("download_count", DESCENDING)], name="download_count_idx")
 
-
-            # Referral Codes Collection
             self.referral_codes_collection.create_index([("referral_code", ASCENDING)], unique=True, name="referral_code_idx")
             self.referral_codes_collection.create_index([("creator_user_id", ASCENDING)], name="creator_user_id_idx")
             self.referral_codes_collection.create_index([("expiry_date", ASCENDING)], name="ref_code_expiry_idx")
-            self.referral_codes_collection.create_index([("is_claimed", ASCENDING)], name="ref_code_claimed_idx")
 
-            # Requests Collection (if used beyond logging channel)
             self.requests_collection.create_index([("user_telegram_id", ASCENDING)], name="req_user_id_idx")
             self.requests_collection.create_index([("status", ASCENDING)], name="req_status_idx")
-            self.requests_collection.create_index([("request_date", DESCENDING)], name="req_date_idx")
-
             logger.info("✅ Database indexes ensured.")
         except OperationFailure as e:
-            logger.error(f"⚠️ Error creating indexes: {e}. This might happen if indexes already exist with different options, or due to permissions.")
+            logger.warning(f"⚠️ Error ensuring indexes (might already exist or permissions issue): {e}")
         except Exception as e:
-            logger.error(f"⚠️ An unexpected error occurred during index creation: {e}")
+            logger.error(f"⚠️ Unexpected error during index creation: {e}", exc_info=True)
 
+    # --- User Management ---
+    async def add_or_update_user(self, user_id: int, first_name: str, username: Optional[str] = None, referred_by_id: Optional[int] = None) -> dict | None:
+        now_utc = datetime.now(pytz.utc)
+        today_date_obj = now_utc.date() # For daily reset comparisons
+        
+        user_doc_from_db = await self.users_collection.find_one({"telegram_id": user_id})
 
-
-
-
-
-
-
-
-# --- Database Connection ---
-try:
-    client = MongoClient(settings.DATABASE_URL)
-    db = client[settings.DATABASE_NAME]
-    logger.info(f"✅ Successfully connected to MongoDB: {settings.DATABASE_NAME}")
-
-    # --- Collections ---
-    users_collection = db["users"]
-    anime_collection = db["anime"]
-    requests_collection = db["requests"] # If you decide to log requests to DB too
-    generated_referral_codes_collection = db["generated_referral_codes"]
-    
-                return {"new": False, "tokens_awarded": 0, "user_doc": user_data} # No tokens awarded for existing user login
+        if not user_doc_from_db: # New user
+            initial_tokens = settings.TOKENS_FOR_NEW_USER_DIRECT_START
+            if referred_by_id:
+                initial_tokens = settings.TOKENS_FOR_NEW_USER_VIA_REFERRAL
+            
+            new_user_data = {
+                "telegram_id": user_id, "first_name": first_name, "username": username,
+                "download_tokens": initial_tokens,
+                "last_token_earn_reset_date": today_date_obj # Pydantic model expects datetime but stores date() object is fine in mongo
+            }
+            try:
+                user_model = UserModel(**new_user_data) # Validate with Pydantic
+                await self.users_collection.insert_one(user_model.model_dump(by_alias=True, exclude_none=True))
+                logger.info(f"New user {user_id} ({first_name}) added with {initial_tokens} tokens.")
+                # Fetch again to ensure we have the DB state including defaults from Pydantic model
+                user_doc_after_insert = await self.users_collection.find_one({"telegram_id": user_id})
+                return {"new": True, "tokens_awarded": initial_tokens, "user_doc": UserModel(**user_doc_after_insert)}
+            except ValidationError as e:
+                logger.error(f"Pydantic validation error for new user {user_id}: {e}")
+            except DuplicateKeyError:
+                logger.warning(f"User {user_id} already exists (race condition on add?). Will proceed to update.")
+                # Fall through to update logic if a race condition led to duplicate key
+                user_doc_from_db = await self.users_collection.find_one({"telegram_id": user_id}) # fetch it now
             except Exception as e:
-                logger.error(f"Error updating user {user_id}: {e}")
-                return None
-
-
-    async def get_user(self, user_id: int):
-        """Fetches a user by their Telegram ID."""
-        try:
-            return await self.users_collection.find_one({"telegram_id": user_id})
-        except Exception as e:
-            logger.error(f"Error fetching user {user_id}: {e}")
+                logger.error(f"DB error adding new user {user_id}: {e}", exc_info=True)
             return None
 
-    async def update_user_tokens(self, user_id: int, token_change: int):
-        """Increments or decrements user tokens. token_change can be positive or negative."""
+        # Existing user: update logic
+        update_fields = {"last_active_date": now_utc}
+        pydantic_user_existing = UserModel(**user_doc_from_db) # Load into Pydantic for comparison and type safety
+
+        if pydantic_user_existing.first_name != first_name: update_fields["first_name"] = first_name
+        if pydantic_user_existing.username != username: update_fields["username"] = username # Handles None vs value change
+        
+        # Daily token earn reset
+        last_reset_db = pydantic_user_existing.last_token_earn_reset_date
+        if isinstance(last_reset_db, datetime): last_reset_db = last_reset_db.date() # Ensure comparison with date object
+
+        if last_reset_db != today_date_obj:
+            update_fields["tokens_earned_today"] = 0
+            update_fields["last_token_earn_reset_date"] = today_date_obj # Store as date object
+
+        if update_fields:
+            try:
+                await self.users_collection.update_one({"telegram_id": user_id}, {"$set": update_fields})
+                user_doc_after_update = await self.users_collection.find_one({"telegram_id": user_id})
+                return {"new": False, "tokens_awarded": 0, "user_doc": UserModel(**user_doc_after_update)}
+            except Exception as e:
+                logger.error(f"DB error updating user {user_id}: {e}", exc_info=True)
+                return None
+        # If no fields to update except implicitly last_active_date (if always set by find_one_and_update)
+        return {"new": False, "tokens_awarded": 0, "user_doc": pydantic_user_existing}
+
+
+    async def get_user(self, user_id: int) -> UserModel | None:
+        try:
+            user_doc = await self.users_collection.find_one({"telegram_id": user_id})
+            if user_doc:
+                return UserModel(**user_doc) # Parse into Pydantic model
+            return None
+        except ValidationError as e:
+            logger.error(f"Pydantic validation error fetching user {user_id}: {e} - Data: {user_doc}")
+            return None # Or raise/return dict
+        except Exception as e:
+            logger.error(f"DB error fetching user {user_id}: {e}", exc_info=True)
+            return None
+
+    async def update_user_tokens(self, user_id: int, token_change: int) -> bool:
         try:
             result = await self.users_collection.update_one(
-                {"telegram_id": user_id},
-                {"$inc": {"download_tokens": token_change}}
+                {"telegram_id": user_id}, {"$inc": {"download_tokens": token_change}}
             )
             return result.modified_count > 0
-        except    # You might want to create indexes here for commonly queried fields
-    # Example:
-    users_collection.create_index("telegram_id", unique=True)
-    anime_collection.create_index([("title_english", "text")], name="anime_title_text_index") # For fuzzy text search
-    anime_collection.create_index("genres")
-    anime_collection.create_index("status")
-    anime_collection.create_index("release_year")
-    generated_referral_codes_collection.create_index("referral_code", unique=True)
-    generated_referral_codes_collection.create_index("creator_user_id")
-    logger.info("MongoDB indexes checked/created.")
-
-except mongo_errors.ConnectionFailure as e:
-    logger.critical(f"❌ MongoDB Connection Failure: {e}. Bot cannot operate without database.")
-    # In a real scenario, you might want to retry or exit gracefully
-    # For now, this will prevent the bot from starting properly if DB is down.
-    raise  # Re-raise the exception to halt execution if DB connection fails on startup
-except Exception Exception as e:
-            logger.error(f"Error updating tokens for user {user_id}: {e}")
+        except Exception as e:
+            logger.error(f"DB error updating tokens for user {user_id}: {e}", exc_info=True)
             return False
 
-    async def grant_premium(self, user_id: int, duration_days: int):
-        """Grants premium status to a user for a specified number of days."""
-        now = datetime.now(pytz.utc)
-        expiry_date = now + timedelta(days=duration_days)
+    async def grant_premium(self, user_id: int, duration_days: int) -> tuple[bool, Optional[datetime]]:
+        now_utc = datetime.now(pytz.utc)
+        expiry_date = now_utc + timedelta(days=duration_days)
         try:
             result = await self.users_collection.update_one(
                 {"telegram_id": user_id},
@@ -157,11 +179,11 @@ except Exception Exception as e:
             )
             return result.modified_count > 0, expiry_date
         except Exception as e:
-            logger.error(f"Error granting premium to user {user_id}: {e}")
+            logger.error(f"DB error granting premium to user {user_id}: {e}", exc_info=True)
             return False, None
 
-    async def revoke_premium(self, user_id: int):
-        """Revokes premium status from a user."""
+    async def revoke_premium(self, user_id: int) -> bool:
+        # (Implementation as before)
         try:
             result = await self.users_collection.update_one(
                 {"telegram_id": user_id},
@@ -169,57 +191,388 @@ except Exception Exception as e:
             )
             return result.modified_count > 0
         except Exception as e:
-            logger.error(f"Error revoking premium for user {user_id}: {e}")
+            logger.error(f"DB error revoking premium for user {user_id}: {e}", exc_info=True)
             return False
 
-    async def get_all_user_ids(self, premium as e:
-    logger.critical(f"❌ An unexpected error occurred during MongoDB setup: {e}")
-    raise
+    async def check_and_deactivate_expired_premiums(self) -> List[int]:
+        now_utc = datetime.now(pytz.utc)
+        query = {"premium_status": True, "premium_expiry_date": {"$lt": now_utc}}
+        update = {"$set": {"premium_status": False, "premium_expiry_date": None}}
+        updated_users_ids = []
+        try:
+            cursor = self.users_collection.find(query, {"telegram_id": 1})
+            async for user in cursor: updated_users_ids.append(user["telegram_id"])
+            
+            if updated_users_ids:
+                result = await self.users_collection.update_many(query, update)
+                logger.info(f"Deactivated premium for {result.modified_count} users.")
+            return updated_users_ids
+        except Exception as e:
+            logger.error(f"DB error deactivating expired premiums: {e}", exc_info=True)
+            return []
+            
+    async def update_daily_token_earn(self, user_id: int, tokens_earned_this_time: int) -> bool:
+        # Assumes daily reset logic (checking last_token_earn_reset_date) is done BEFORE calling this
+        # or that user_doc passed to calling function is up-to-date with reset status.
+        # This function just increments `tokens_earned_today`.
+        now_date_obj = datetime.now(pytz.utc).date() # This must be stored as DateObject for correct comparison by model
+        try:
+            # Ensure last_token_earn_reset_date is current date before incrementing
+            await self.users_collection.update_one(
+                {"telegram_id": user_id},
+                {
+                    "$inc": {"tokens_earned_today": tokens_earned_this_time},
+                    "$set": {"last_token_earn_reset_date": now_date_obj} # Pydantic model will handle date type
+                }
+            )
+            return True
+        except Exception as e:
+            logger.error(f"DB error updating daily token earn for {user_id}: {e}", exc_info=True)
+            return False
 
 
-# --- User Management ---
-async def add_or_update_user(user_data):
-    """
-    Adds a new user or updates existing user's first_name, username, last_active_date.
-    Initializes tokens for new users.
-    Args:
-        user_data (telegram.User): Telegram User object.
-    Returns:
-        dict: The user document from the database.
-    """
-    now = datetime.utcnow()
-    telegram_id = user_data.id
-    first_name = user_data.first_name
-    username = user_data.username # Can be None
+    # --- Watchlist ---
+    async def add_to_watchlist(self, user_id: int, anime_id_str: str) -> bool:
+        # (Implementation as before, anime_id_str is already string)
+        try:
+            result = await self.users_collection.update_one(
+                {"telegram_id": user_id}, {"$addToSet": {"watchlist": anime_id_str}}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"DB error adding anime {anime_id_str} to watchlist for user {user_id}: {e}", exc_info=True)
+            return False
 
-    query = {"telegram_id": telegram_id}
-    # Initial values for a new user
-    new_user_values = {
-        "first_name": first_name,
-        "username": username,
-        "download_tokens": settings.TOKENS_FOR_NEW_USER_DIRECT_START, # Default tokens
-        "premium_status": False,
-        "premium_expiry_date": None,
-        "watchlist": [],
-        "join_date": now,
-        "last_active_date": now,
-        "tokens_earned_today": 0,
-        "last_token_earn_reset_date": now.date() # Store only date part for daily reset logic
-    }
-    update_values = {
-        "$set": {
-            "first_name": first_name,
-            "username": username,
-            "last_active_date": now
-        },
-        "$setOnInsert": new__only: bool = False, active_only_days: int = 0):
-        """Gets all user IDs for broadcasting or other purposes.
-           If premium_only is True, returns only premium users.
-           If active_only_days > 0, returns users active in last N days.
-        """
+    async def remove_from_watchlist(self, user_id: int, anime_id_str: str) -> bool:
+        # (Implementation as before)
+        try:
+            result = await self.users_collection.update_one(
+                {"telegram_id": user_id}, {"$pull": {"watchlist": anime_id_str}}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"DB error removing anime {anime_id_str} from watchlist for user {user_id}: {e}", exc_info=True)
+            return False
+
+    async def get_watchlist_animes_details(self, user_id: int, page: int = 1, per_page: int = 5) -> tuple[List[AnimeModel], int]:
+        user = await self.get_user(user_id)
+        if not user or not user.watchlist:
+            return [], 0
+        
+        watchlist_anime_ids_str = user.watchlist
+        total_items = len(watchlist_anime_ids_str)
+        
+        # Paginate IDs first
+        start_idx = (page - 1) * per_page
+        end_idx = start_idx + per_page
+        paginated_ids_str = watchlist_anime_ids_str[start_idx:end_idx]
+
+        if not paginated_ids_str:
+            return [], total_items # Reached end of list
+
+        try:
+            # Convert string IDs to ObjectIds for the $in query
+            object_ids_to_fetch = [ObjectId(aid_str) for aid_str in paginated_ids_str]
+        except Exception as e: # bson.errors.InvalidId
+            logger.error(f"Invalid ObjectId found in watchlist for user {user_id}: {paginated_ids_str}, error: {e}")
+            return [], total_items
+
+
+        anime_details_list = []
+        if object_ids_to_fetch:
+            try:
+                cursor = self.anime_collection.find({"_id": {"$in": object_ids_to_fetch}})
+                async for anime_doc in cursor:
+                    try:
+                        anime_details_list.append(AnimeModel(**anime_doc))
+                    except ValidationError as ve:
+                        logger.error(f"Pydantic validation error for anime {anime_doc.get('_id')} in watchlist: {ve}")
+                # To maintain order from watchlist, sort results based on original paginated_ids_str list order
+                # This requires `id` field from Pydantic model which is `_id`
+                ordered_details = sorted(anime_details_list, key=lambda x: paginated_ids_str.index(str(x.id)))
+                return ordered_details, total_items
+            except Exception as e:
+                logger.error(f"DB error fetching watchlist anime details for user {user_id}: {e}", exc_info=True)
+        
+        return [], total_items
+
+
+    # --- Referral Codes ---
+    async def create_referral_code(self, creator_user_id: int, referral_code_str: str, tokens_to_award: int, expiry_date: datetime) -> bool:
+        try:
+            code_model = GeneratedReferralCodeModel(
+                referral_code=referral_code_str,
+                creator_user_id=creator_user_id,
+                tokens_to_award=tokens_to_award,
+                expiry_date=expiry_date.astimezone(pytz.utc) if expiry_date.tzinfo is None else expiry_date # Ensure UTC
+            )
+            await self.referral_codes_collection.insert_one(code_model.model_dump(by_alias=True, exclude_none=True))
+            return True
+        except ValidationError as e:
+            logger.error(f"Pydantic validation error for referral code {referral_code_str}: {e}")
+        except DuplicateKeyError:
+            logger.warning(f"Attempted to insert duplicate referral code: {referral_code_str}")
+        except Exception as e:
+            logger.error(f"DB error creating referral code {referral_code_str}: {e}", exc_info=True)
+        return False
+
+    async def get_referral_code(self, referral_code_str: str) -> GeneratedReferralCodeModel | None:
+        now_utc = datetime.now(pytz.utc)
+        try:
+            doc = await self.referral_codes_collection.find_one({
+                "referral_code": referral_code_str,
+                "is_claimed": False,
+                "expiry_date": {"$gte": now_utc}
+            })
+            return GeneratedReferralCodeModel(**doc) if doc else None
+        except ValidationError as e:
+            logger.error(f"Pydantic validation error for fetched referral code {referral_code_str}: {e} - Data: {doc}")
+        except Exception as e:
+            logger.error(f"DB error fetching referral code {referral_code_str}: {e}", exc_info=True)
+        return None
+
+    async def claim_referral_code(self, referral_code_str: str, claimed_by_user_id: int) -> bool:
+        # (Implementation as before)
+        try:
+            result = await self.referral_codes_collection.update_one(
+                {"referral_code": referral_code_str, "is_claimed": False},
+                {"$set": {"is_claimed": True, "claimed_by_user_id": claimed_by_user_id, "claim_date": datetime.now(pytz.utc)}}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"DB error claiming referral {referral_code_str} by user {claimed_by_user_id}: {e}", exc_info=True)
+            return False
+
+    # --- Anime Content Management (Admin) ---
+    async def add_anime(self, anime_data: dict) -> Optional[str]: # Returns new anime ObjectId as string
+        try:
+            # Ensure `last_content_update` is set if not already
+            anime_data.setdefault("last_content_update", datetime.now(pytz.utc))
+            anime_model = AnimeModel(**anime_data) # Validate with Pydantic
+            # .model_dump() will handle aliases like _id (though not set here for insert) and type conversions
+            result = await self.anime_collection.insert_one(anime_model.model_dump(by_alias=True, exclude_none=True))
+            return str(result.inserted_id) if result.inserted_id else None
+        except ValidationError as e:
+            logger.error(f"Pydantic validation error adding anime '{anime_data.get('title_english')}': {e}")
+        except Exception as e:
+            logger.error(f"DB error adding anime '{anime_data.get('title_english')}': {e}", exc_info=True)
+        return None
+
+    async def get_anime_by_id_str(self, anime_id_str: str) -> AnimeModel | None:
+        try:
+            obj_id = ObjectId(anime_id_str)
+            doc = await self.anime_collection.find_one({"_id": obj_id})
+            return AnimeModel(**doc) if doc else None
+        except ValidationError as e:
+            logger.error(f"Pydantic validation error fetching anime {anime_id_str}: {e} - Data: {doc}")
+        except (TypeError, ValueError, Exception) as e: # Catches InvalidId from ObjectId too
+            if "InvalidId" in str(e): logger.warning(f"Invalid ObjectId string format: {anime_id_str}")
+            else: logger.error(f"Error fetching anime by id_str {anime_id_str}: {e}", exc_info=True)
+        return None
+
+    async def get_anime_by_title_exact(self, title_english: str) -> AnimeModel | None:
+        try:
+            doc = await self.anime_collection.find_one({"title_english": {"$regex": f"^{title_english}$", "$options": "i"}})
+            return AnimeModel(**doc) if doc else None
+        except ValidationError as e:
+            logger.error(f"Pydantic error for anime by exact title '{title_english}': {e} - Data: {doc}")
+        except Exception as e:
+            logger.error(f"DB error fetching anime by exact title '{title_english}': {e}", exc_info=True)
+        return None
+
+    async def update_anime_details(self, anime_id_str: str, update_data: dict) -> bool:
+        # update_data should contain only fields to be $set. Pydantic not directly used here unless partial models
+        try:
+            obj_id = ObjectId(anime_id_str)
+            # Ensure last_content_update is always updated on any detail change
+            update_data.setdefault("last_content_update", datetime.now(pytz.utc))
+            result = await self.anime_collection.update_one({"_id": obj_id}, {"$set": update_data})
+            return result.modified_count > 0
+        except (TypeError, ValueError, Exception) as e:
+            if "InvalidId" in str(e): logger.warning(f"Invalid ObjectId for update_anime_details: {anime_id_str}")
+            else: logger.error(f"DB error updating anime {anime_id_str}: {e}", exc_info=True)
+        return False
+
+    # --- Robust Season/Episode/Version Add/Update Functions (Crucial for CM) ---
+    async def add_file_version_to_episode_robust(self, anime_id_str: str, season_num: int, episode_num: int, version_data: dict) -> bool:
+        try:
+            # Validate version_data with Pydantic model
+            file_version_model = FileVersionModel(**version_data)
+            version_dict_to_save = file_version_model.model_dump(exclude_none=True)
+            obj_id = ObjectId(anime_id_str)
+
+            # Upsert logic: Add season if not exists, add episode if not exists, then push version
+            # 1. Ensure Season exists
+            season_match_query = {"_id": obj_id, "seasons.season_number": season_num}
+            anime_doc = await self.anime_collection.find_one(season_match_query)
+            if not anime_doc: # Season does not exist, add it
+                new_season_pydantic = SeasonModel(season_number=season_num, episodes=[])
+                await self.anime_collection.update_one(
+                    {"_id": obj_id},
+                    {"$push": {"seasons": new_season_pydantic.model_dump(exclude_none=True)}}
+                )
+            
+            # 2. Ensure Episode exists within the season
+            episode_match_query = {"_id": obj_id, "seasons": {"$elemMatch": {"season_number": season_num, "episodes.episode_number": episode_num}}}
+            anime_doc_with_ep = await self.anime_collection.find_one(episode_match_query)
+            if not anime_doc_with_ep: # Episode does not exist, add it
+                new_episode_pydantic = EpisodeModel(episode_number=episode_num, versions=[]) # Start with empty versions, then push actual
+                await self.anime_collection.update_one(
+                    {"_id": obj_id, "seasons.season_number": season_num},
+                    {"$push": {"seasons.$.episodes": new_episode_pydantic.model_dump(exclude_none=True)}}
+                )
+
+            # 3. Push the new file version
+            result = await self.anime_collection.update_one(
+                {"_id": obj_id},
+                {"$push": {"seasons.$[s].episodes.$[e].versions": version_dict_to_save}},
+                array_filters=[
+                    {"s.season_number": season_num},
+                    {"e.episode_number": episode_num}
+                ]
+            )
+            if result.modified_count > 0:
+                await self.anime_collection.update_one({"_id": obj_id}, {"$set": {"last_content_update": datetime.now(pytz.utc)}})
+            return result.modified_count > 0
+        except ValidationError as ve:
+            logger.error(f"Pydantic validation error for file version (A:{anime_id_str} S:{season_num} E:{episode_num}): {ve}")
+        except Exception as e:
+            logger.error(f"DB error in add_file_version_robust (A:{anime_id_str} S:{season_num} E:{episode_num}): {e}", exc_info=True)
+        return False
+
+    async def add_or_update_episode_data(self, anime_id_str: str, season_num: int, episode_num: int, episode_update_data: dict, only_air_date: bool = False):
+        # This function is for setting air_date or adding a basic episode structure.
+        # `episode_update_data` for air_date would be {"air_date": datetime_or_tba_str}
+        try:
+            obj_id = ObjectId(anime_id_str)
+            # Validate episode data part
+            if 'air_date' in episode_update_data and isinstance(episode_update_data['air_date'], str) and episode_update_data['air_date'].upper() != 'TBA':
+                try: # If it's a date string, parse it
+                    episode_update_data['air_date'] = datetime.strptime(episode_update_data['air_date'], "%Y-%m-%d").replace(tzinfo=pytz.utc)
+                except ValueError:
+                    logger.error(f"Invalid date string for air_date: {episode_update_data['air_date']}")
+                    return False # Or raise error
+            
+            # If setting only air_date, versions should be empty array
+            if only_air_date:
+                episode_update_data["versions"] = []
+
+            # Episode shell based on input - Pydantic will fill defaults if any.
+            ep_model_data = {"episode_number": episode_num, **episode_update_data}
+            validated_ep_data_for_db = EpisodeModel(**ep_model_data).model_dump(exclude_none=True)
+
+
+            # Upsert logic: Find season, then find episode. If episode found, $set. If not, $push.
+            # If season not found, add season with this episode.
+            
+            # 1. Ensure Season exists (same as in add_file_version_robust)
+            season_match_query = {"_id": obj_id, "seasons.season_number": season_num}
+            anime_doc = await self.anime_collection.find_one(season_match_query)
+            if not anime_doc:
+                new_season_pydantic = SeasonModel(season_number=season_num, episodes=[validated_ep_data_for_db])
+                await self.anime_collection.update_one(
+                    {"_id": obj_id},
+                    {"$push": {"seasons": new_season_pydantic.model_dump(exclude_none=True)}}
+                )
+                await self.anime_collection.update_one({"_id": obj_id}, {"$set": {"last_content_update": datetime.now(pytz.utc)}})
+                return True
+
+            # 2. Season exists. Check if Episode exists.
+            episode_match_query = {"_id": obj_id, "seasons": {"$elemMatch": {"season_number": season_num, "episodes.episode_number": episode_num}}}
+            anime_doc_with_ep = await self.anime_collection.find_one(episode_match_query)
+
+            if anime_doc_with_ep: # Episode exists, update it (e.g. set air_date and clear versions)
+                update_op = {"$set": {}}
+                for key, value in validated_ep_data_for_db.items(): # Build the $set dynamically based on input
+                    update_op["$set"][f"seasons.$[s].episodes.$[e].{key}"] = value
+                
+                result = await self.anime_collection.update_one(
+                    {"_id": obj_id},
+                    update_op,
+                    array_filters=[{"s.season_number": season_num}, {"e.episode_number": episode_num}]
+                )
+            else: # Episode does not exist in the season, add it
+                result = await self.anime_collection.update_one(
+                    {"_id": obj_id, "seasons.season_number": season_num},
+                    {"$push": {"seasons.$.episodes": validated_ep_data_for_db}}
+                )
+            
+            if result.modified_count > 0 or result.upserted_id:
+                await self.anime_collection.update_one({"_id": obj_id}, {"$set": {"last_content_update": datetime.now(pytz.utc)}})
+            return result.modified_count > 0 or result.upserted_id is not None
+
+        except ValidationError as ve:
+            logger.error(f"Pydantic validation error for episode data (A:{anime_id_str} S:{season_num} E:{episode_num}): {ve}")
+        except Exception as e:
+            logger.error(f"DB error in add_or_update_episode_data (A:{anime_id_str} S:{season_num} E:{episode_num}): {e}", exc_info=True)
+        return False
+
+
+    # --- Anime Search & Browsing ---
+    async def search_anime_by_title(self, query: str, page: int = 1, per_page: int = 5) -> tuple[List[AnimeModel], int]:
+        # (Implementation as before, but parse results into AnimeModel)
+        skip_count = (page - 1) * per_page
+        mongo_query = {"$text": {"$search": query}}
+        projection = {"score": {"$meta": "textScore"}}
+        sort_criteria = [("score", {"$meta": "textScore"}), ("title_english", ASCENDING)]
+        
+        results_list = []
+        total_items = 0
+        try:
+            cursor = self.anime_collection.find(mongo_query, projection).sort(sort_criteria).skip(skip_count).limit(per_page)
+            async for doc in cursor:
+                try: results_list.append(AnimeModel(**doc))
+                except ValidationError as ve: logger.error(f"Pydantic error for search result anime {doc.get('_id')}: {ve}")
+            
+            # Count_documents for text search might be slow or behave unexpectedly.
+            # For a more accurate count with text search, specific strategies may be needed.
+            # Simple count for now.
+            total_items = await self.anime_collection.count_documents(mongo_query)
+        except Exception as e:
+            logger.error(f"DB error searching anime with query '{query}': {e}", exc_info=True)
+        return results_list, total_items
+
+    async def get_animes_by_filter(self, filter_criteria: dict, page: int = 1, per_page: int = 5, sort_by: Optional[list] = None) -> tuple[List[AnimeModel], int]:
+        # (Implementation as before, parse results into AnimeModel)
+        skip_count = (page - 1) * per_page
+        sort_criteria = sort_by if sort_by else [("title_english", ASCENDING)]
+        results_list = []
+        total_items = 0
+        try:
+            cursor = self.anime_collection.find(filter_criteria).sort(sort_criteria).skip(skip_count).limit(per_page)
+            async for doc in cursor:
+                try: results_list.append(AnimeModel(**doc))
+                except ValidationError as ve: logger.error(f"Pydantic error for filtered anime {doc.get('_id')}: {ve}")
+            total_items = await self.anime_collection.count_documents(filter_criteria)
+        except Exception as e:
+            logger.error(f"DB error fetching animes with filter {filter_criteria}: {e}", exc_info=True)
+        return results_list, total_items
+
+    async def get_latest_episodes_anime(self, page: int = 1, per_page: int = 5) -> tuple[List[AnimeModel], int]:
+        query = {} # Can add filters e.g. {"status": {"$in": ["Ongoing", "Recently Completed"]}}
+        sort_criteria = [("last_content_update", DESCENDING), ("title_english", ASCENDING)]
+        return await self.get_animes_by_filter(query, page, per_page, sort_by=sort_criteria)
+
+    async def get_popular_animes(self, page: int = 1, per_page: int = 5) -> tuple[List[AnimeModel], int]:
         query = {}
-        if premium_only:
-            query["premium_status"] = True
+        sort_criteria = [("download_count", DESCENDING), ("title_english", ASCENDING)]
+        return await self.get_animes_by_filter(query, page, per_page, sort_by=sort_criteria)
+
+    async def increment_anime_download_count(self, anime_id_str: str) -> bool:
+        # (Implementation as before)
+        try:
+            obj_id = ObjectId(anime_id_str)
+            result = await self.anime_collection.update_one({"_id": obj_id}, {"$inc": {"download_count": 1}})
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"DB error incrementing download count for anime {anime_id_str}: {e}", exc_info=True)
+            return False
+    
+    # --- General Admin Fetch / Log Functions ---
+    async def get_all_user_ids(self, premium_only: bool = False, active_only_days: int = 0) -> List[int]:
+        # (Implementation as before)
+        query = {}
+        if premium_only: query["premium_status"] = True
         if active_only_days > 0:
             active_since = datetime.now(pytz.utc) - timedelta(days=active_only_days)
             query["last_active_date"] = {"$gte": active_since}
@@ -227,787 +580,126 @@ async def add_or_update_user(user_data):
         user_ids = []
         try:
             cursor = self.users_collection.find(query, {"telegram_id": 1})
-            async for user_doc in cursor:
-                user_ids.append(user_doc["telegram_id"])
-            return user_ids
+            async for user_doc in cursor: user_ids.append(user_doc["telegram_id"])
         except Exception as e:
-            logger.error(f"Error fetching user IDs: {e}")
-            return []
-
-    async def check_and_deactivate_expired_premiums(self):
-        """Finds users whose premium has expired and deactivates it."""
-        now = datetime.now(pytz.utc)
-        query = {"premium_status": True, "premium_expiry_date": {"$lt": now}}
-        update = {"$set": {"premium_status": False, "premium_expiry_date": None}}
-        updated_users_ids = []
-        try:
-            # Find users whose premium expired to notify them later if needed
-            cursor = self.users_collection.find(query,user_values # These fields are only set if it's a new document
-    }
-
-    try:
-        user_doc = users_collection.find_one_and_update(
-            query,
-            update_values,
-            upsert=True, # Create if doesn't exist
-            return_document=ReturnDocument.AFTER
-        )
-        return user_doc
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error adding/updating user {telegram_id}: {e}")
-        return None
-
-async def get_user(telegram_id: int):
-    try:
-        return users_collection.find_one({"telegram_id": telegram_id})
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error getting user {telegram_id}: {e}")
-        return None
-
-async def update_user_tokens(telegram_id: int, token_change: int):
-    """Increments or decrements user tokens."""
-    try:
-        result = users_collection.find_one_and_update(
-            {"telegram_id": telegram_id},
-            {"$inc": {"download_tokens": token_change}},
-            return_document=ReturnDocument.AFTER
-        )
-        return result["download_tokens"] if result else None
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error updating tokens for user {telegram_id}: {e}")
-        return None
-
-async def grant_premium_to_user(telegram_id: int, duration_days: int):
-    try:
-        expiry_date = datetime.utcnow() + timedelta(days=duration_days)
-        users_collection.update_one(
-            {"telegram_id": telegram_id},
-            {"$set": {"premium_status": True, "premium_expiry_date": expiry_date}}
- {"telegram_id": 1})
-            async for user in cursor:
-                updated_users_ids.append(user["telegram_id"])
-            
-            if updated_users_ids:
-                result = await self.users_collection.update_many(query, update)
-                logger.info(f"Deactivated premium for {result.modified_count} users whose subscription expired.")
-                return updated_users_ids
-            return []
-        except Exception as e:
-            logger.error(f"Error deactivating expired premiums: {e}")
-            return []
-    
-    async def update_daily_token_earn(self, user_id: int, tokens_earned: int):
-        now_date = datetime.now(pytz.utc).date()
-        try:
-            await self.users_collection.update_one(
-                {"telegram_id": user_id},
-                {"$inc": {"tokens_earned_today": tokens_earned}, "$set": {"last_token_earn_reset_date": now_date}}
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Error updating daily token earn for user {user_id}: {e}")
-            return False
+            logger.error(f"DB error fetching all user IDs with query {query}: {e}", exc_info=True)
+        return user_ids
 
 
-    # --- Watchlist Management ---
-    async def add_to_watchlist(self, user_id: int, anime_id: str): # anime_id is ObjectId as string
-        """Adds an anime (by its MongoDB _id string) to a user's watchlist."""
-        try:
-            result = await self.users_collection.update_one(
-                {"telegram_id": user_id},
-                {"$addToSet": {"watchlist": anime_id}} # $addToSet prevents duplicates
-            )
-            return result.modified_count > 0
-        except Exception as e:
-            logger.error(f"Error adding anime {anime_id} to watchlist for user {user_id}: {e}")
-            return False
-
-    async def remove_from_watchlist(self, user_id: int        )
-        return expiry_date
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error granting premium to user {telegram_id}: {e}")
-        return None
-
-async def revoke_premium_from_user(telegram_id: int):
-    try:
-        users_collection.update_one(
-            {"telegram_id": telegram_id},
-            {"$set": {"premium_status": False, "premium_expiry_date": None}}
-        )
-        return True
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error revoking premium from user {telegram_id}: {e}")
-        return False
-
-async def check_and_reset_daily_token_earn_limit(telegram_id: int):
-    """Checks if today is a new day compared to last reset, and resets if so.
-       Returns the user doc after potential reset.
-    """
-    today_date = datetime.utcnow().date()
-    user = await get_user(telegram_id)
-    if not user:
-        return None
-
-    last_reset = user.get("last_token_earn_reset_date")
-    # If last_reset is already a date object or None
-    if last_reset is None or (isinstance(last_reset, datetime) and last_reset.date() < today_date) or \
-       (isinstance(last_reset, type(today_date)) and last_reset < today_date) : # Handles both datetime and date obj
-        try:
-            users_collection.update_one(
-                {"telegram_id": telegram_id},
-                {"$set": {"tokens_earned_today": 0, "last_token_earn_reset_date": today_date}}
-            )
-            user["tokens_earned_today"] = 0 # Update in-memory user doc
-            user["last_token_earn_reset_date"] = today_date
-            logger.info(f"Daily token earn limit reset for user {telegram_id}")
-        except mongo_errors., anime_id: str):
-        """Removes an anime from a user's watchlist."""
-        try:
-            result = await self.users_collection.update_one(
-                {"telegram_id": user_id},
-                {"$pull": {"watchlist": anime_id}}
-            )
-            return result.modified_count > 0
-        except Exception as e:
-            logger.error(f"Error removing anime {anime_id} from watchlist for user {user_id}: {e}")
-            return False
-
-    async def get_watchlist_anime_ids(self, user_id: int):
-        """Gets a list of anime _id strings from user's watchlist."""
-        user = await self.get_user(user_id)
-        return user.get("watchlist", []) if user else []
-
-    async def get_watchlist_animes_details(self, user_id: int, page: int = 1, per_page: int = 5):
-        """Gets paginated full anime details for items in a user's watchlist."""
-        anime_ids = await self.get_watchlist_anime_ids(user_id)
-        if not anime_ids:
-            return [], 0 # Empty list, 0 total items
-        
-        # Convert string IDs to ObjectIds for MongoDB query if necessary
-        # from bson import ObjectId
-        # object_ids = [ObjectId(aid) for aid in anime_ids]
-        # query = {"_id": {"$in": object_ids}}
-        # For simplicity if anime_id in watchlist is already _id from anime_collection
-        # then the query doesn't need ObjectId conversion here if _id field is directly matched
-        # But anime_collection typically stores _id as ObjectId. So conversion *is* usually needed if anime_id in watchlist is stored as string.
-        # Assuming anime_id in watchlist is a string representation of ObjectId.
-
-        # Let's assume anime_id is a string, which means you need to getPyMongoError as e:
-            logger.error(f"MongoDB error resetting daily token earn limit for user {telegram_id}: {e}")
-    return user
-
-async def increment_tokens_earned_today(telegram_id: int, amount: int):
-    try:
-        users_collection.update_one(
-            {"telegram_id": telegram_id},
-            {"$inc": {"tokens_earned_today": amount}}
-        )
-        return True
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error incrementing tokens_earned_today for user {telegram_id}: {e}")
-        return False
-
-# --- Watchlist Management ---
-async def add_to_watchlist(telegram_id: int, anime_id: str): # Assuming anime_id is ObjectId as string
-    try:
-        users_collection.update_one(
-            {"telegram_id": telegram_id},
-            {"$addToSet": {"watchlist": anime_id}} # $addToSet prevents duplicates
-        )
-        return True
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error adding to watchlist for user {telegram_id}: {e}")
-        return False
-
-async def remove_from_watchlist(telegram_id: int, anime_id: str):
-    try:
-        users_collection.update_one(
-            {"telegram_id": telegram_id},
-            {"$pull": {"watchlist": anime_id}}
-        )
-        return True
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error removing from watchlist for user {telegram_id}: {e}")
-        return False
-
-async def get_watchlist(telegram_id: int, page: int, limit: int):
-    try:
-        user_doc = users_collection.find_one(
-            {"telegram_id": telegram_id},
-            {"watchlist": {"$slice": [(page - 1) * limit, limit]}} # For pagination directly in query
-        )
-        if user_doc and user_doc.get("watchlist"):
-            anime_ids = user_doc["watchlist"]
-            # Fetch full anime details for these IDs
-            anime_details = list(anime_collection.find({"_id": {"$in": [ObjectId(aid) for aid in anime_ids]}}))
-            total_items = await count_watchlist_items(telegram_id) # Need a separate count for total
-            return anime_details, total_items
-        return [], 0
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error getting watchlist for user {telegram_id}: {e}")
-        return [], 0
-    except Exception as e: # Catch ObjectId errors too
-        logger.error(f"Error converting watchlist anime_ids for user {telegram_id}: {e}")
-        return [], 0
-
-
-async def count_watchlist_items(telegram_id: int):
-    try:
-        user_doc = users_collection.find_one({"telegram_id": telegram_id}, {"watchlist": 1})
-        return len(user_doc.get("watchlist", [])) if user_doc else 0
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error counting watchlist for user {telegram_id}: {e}")
-        return 0
-
-# these ObjectIds or structure schema carefully
-        # For this example, let's proceed assuming they can be matched correctly, but in real use, handle ID types.
-        
-        total_items = len(anime_ids)
-        # Fetching details for each ID separately. This is not optimal for large watchlists.
-        # A better approach would be one query to anime_collection with $in, then client-side pagination if MongoDB doesn't do skip/limit efficiently on $in with large arrays.
-        # Or, denormalize essential anime info into the watchlist array if performance becomes an issue.
-        # For now, a simpler, less performant approach:
-        
-        # This implementation requires that anime_id stored in watchlist IS the string of anime_collection._id
-        # And we fetch details based on these. The provided anime_id *IS* string
-        paginated_ids = anime_ids[(page - 1) * per_page : page * per_page]
-        
-        animes_details = []
-        if paginated_ids:
-            try:
-                # To search by _id string, you typically store the string version or use ObjectId correctly
-                # Assuming `_id` in `anime_collection` is indeed ObjectId, and `anime_id` in watchlist is string
-                # This direct query will not work if anime_id is the _id from anime_collection which is ObjectId type.
-                # A common practice is storing ObjectId as a field itself, or _id is always ObjectId type.
-                # Let's assume for this query, anime_collection could have a unique `anime_realm_id` as string if _id is always ObjectId.
-                # For this function, let's assume we retrieve anime one by one based on `paginated_ids` string.
-                
-                # If watchlist stores string versions of ObjectIds:
-                from bson import ObjectId
-                object_ids_to_fetch = [ObjectId(aid_str) for aid_str in paginated_ids]
-                cursor = self.anime_collection.find({"_id": {"$in": object_ids_to_fetch}})
-                async for anime_doc in cursor:
-                    animes_details.append(anime_doc)
-                
-                # To maintain order from watchlist, you might need to re-order animes_details based on paginated_ids.
-                # MongoDB $in does not guarantee order preservation from the $in array.
-                ordered_details = sorted(animes_details, key=lambda x: paginated_ids.index(str(x['_id'])))
- --- Anime Content Management ---
-from bson.objectid import ObjectId # Import here to avoid circular if used at top level with models
-
-async def add_anime(anime_data: dict):
-    """ Adds a new anime. anime_data should match schema. """
-    try:
-        anime_data["added_date"] = datetime.utcnow()
-        anime_data["download_count"] = 0 # Initialize download count
-        result = anime_collection.insert_one(anime_data)
-        return result.inserted_id
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error adding anime '{anime_data.get('title_english')}': {e}")
-        return None
-
-async def get_anime_by_id(anime_id: str):
-    try:
-        return anime_collection.find_one({"_id": ObjectId(anime_id)})
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error getting anime by ID {anime_id}: {e}")
-        return None
-    except Exception as e: # bson.errors.InvalidId
-        logger.error(f"Invalid anime ID format {anime_id}: {e}")
-        return None
-
-
-async def find_anime_by_title_fuzzy(title_query: str, limit: int, page: int):
-    """
-    Searches anime by title_english using MongoDB text search.
-    Requires a text index on title_english.
-    """
-    skip = (page - 1) * limit
-    try:
-        # Basic text search (less fuzzy than Python's fuzzywuzzy, but good for starts)
-        # For more advanced fuzziness, you might query a broader set then filter with fuzzywuzzy in Python
-        # or explore MongoDB Atlas Search features.
-        cursor = anime_collection.find(
-            {"$text": {"$search": title_query}},
-            {"score": {"$meta": "textScore"}} # For sorting by relevance
-        ).sort([("score", {"$meta": "textScore"})]).skip(skip).limit(limit)
-        
-        results = list(cursor)
-        
-        # Get total count for pagination
-        # Note: count_documents with $text can be tricky / less efficient.
-        # A simpler approach if exact count isn't needed or for smaller datasets:
-        # total_count = anime_collection.count_documents({"$text": {"$search": title_query}})
-        # For larger datasets, counting after retrieving a slightly larger set and then slicing might be better,
-        # or accept that pagination with text search relevance might not show an exact total page count.
-        # For now, let's assume we can count based on the query for pagination.
-        total_count_query = {"$text": {"$search": title_query}}
-        total_count = anime_collection.count_documents(total_count_query)
-
-        return results, total_count
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error finding anime by title '{title_query}': {e}")
-        return [], 0
-
-async def update_anime_details(anime_id: str, update_data: dict):
-    """ Updates core anime details. """
-    try:
-        update_data["last_updated_date"] = datetime.utcnow()
-        result = anime_collection.update_one(
-            {"_id": ObjectId(anime                
-                return ordered_details, total_items
-            except Exception as e:
-                logger.error(f"Error fetching watchlist anime details for user {user_id}: {e}")
-                return [], total_items
-        return [], total_items
-
-    # --- Referral Code Management ---
-    async def create_referral_code(self, creator_user_id: int, referral_code: str, tokens_to_award: int, expiry_date: datetime):
-        doc = {
-            "referral_code": referral_code,
-            "creator_user_id": creator_user_id,
-            "tokens_to_award": tokens_to_award,
-            "expiry_date": expiry_date, # Should be timezone-aware UTC
-            "is_claimed": False,
-            "claimed_by_user_id": None,
-            "creation_date": datetime.now(pytz.utc)
+    async def find_users_for_watchlist_notification(self, anime_id_str: str) -> List[int]:
+        # (Implementation as before)
+        query = {
+            "watchlist": anime_id_str,
+            "notification_preferences.watchlist_new_episode": True,
+            "is_banned": False
         }
+        user_ids = []
         try:
-            await self.referral_codes_collection.insert_one(doc)
-            return True
+            cursor = self.users_collection.find(query, {"telegram_id": 1})
+            async for user_doc in cursor: user_ids.append(user_doc["telegram_id"])
         except Exception as e:
-            logger.error(f"Error creating referral code {referral_code}: {e}")
-            return False
+            logger.error(f"DB error finding users for watchlist notif (anime {anime_id_str}): {e}", exc_info=True)
+        return user_ids
 
-    async def get_referral_code(self, referral_code_str: str):
-        """Fetches an active, unclaimed referral code."""
-        now = datetime.now(pytz.utc)
+    async def log_anime_request_to_db(self, user_id: int, user_first_name: str, anime_title: str, is_premium: bool) -> Optional[str]:
+        """ Logs a request to the database, returns request_id string or None. """
         try:
-            return await self.referral_codes_collection.find_one({
-                "referral_code": referral_code_str,
-                "is_claimed": False,
-                "expiry_date": {"$gte": now} # Ensure it's not expired
-            })
+            req_model_data = {
+                "user_telegram_id": user_id, "user_first_name": user_first_name,
+                "anime_title_requested": anime_title, "is_premium_request": is_premium,
+                "status": "Pending_In_Channel" # From Literal in Pydantic model
+            }
+            req_pydantic_instance = AnimeRequestModel(**req_model_data)
+            result = await self.requests_collection.insert_one(req_pydantic_instance.model_dump(by_alias=True, exclude_none=True))
+            return str(result.inserted_id) if result.inserted_id else None
+        except ValidationError as e:
+            logger.error(f"Pydantic error logging anime request for user {user_id}: {e}")
         except Exception as e:
-            logger.error(f"Error fetching referral code {referral_code_str}: {e}")
-            return None
+            logger.error(f"DB error logging anime request for user {user_id}: {e}", exc_info=True)
+        return None
 
-    async def claim_referral_code(self, referral_code_str: str, claimed_by_user_id: int):
-        """Marks a referral code as claimed."""
+    async def update_request_status_in_db(self, request_id_str: str, new_status: str, admin_name: str = "N/A") -> bool:
+        """ Updates the status of a request logged in the DB. new_status must be one of the Literal values."""
         try:
-            result = await self.referral_codes_collection.update_one(
-                {"referral_code": referral_code_str, "is_claimed": False}, # Ensure it's not already claimed by race condition
-                {"$set": {"is_claimed": True, "claimed_by_user_id": claimed_by_user_id}}
-            )
+            obj_id = ObjectId(request_id_str)
+            # Validate new_status against Pydantic model if needed, or ensure caller sends valid literal
+            update_doc = {
+                "$set": {
+                    "status": new_status,
+                    "admin_handler_name": admin_name,
+                    "last_updated_date": datetime.now(pytz.utc)
+                }
+            }
+            result = await self.requests_collection.update_one({"_id": obj_id}, update_doc)
             return result.modified_count > 0
-        except Exception as e:
-            logger.error(f"Error claiming referral code {referral_code_str} by user {claimed_by_user_id}: {e}")
-            return False
+        except (TypeError, ValueError, Exception) as e: # Catch InvalidId
+            if "InvalidId" in str(e): logger.warning(f"Invalid ObjectId for update_request_status: {request_id_str}")
+            else: logger.error(f"DB error updating request status for {request_id_str}: {e}", exc_info=True)
+        return False
 
-    # --- Anime Data Management (Admin) ---
-    async def add_anime(self, anime_doc: dict):
-        """Adds a new anime document."""
-        anime_doc["added_date"] = datetime.now(pytz.utc)
-        anime_doc["download_count"] = 0 # Initialize download count
-        try:
-            result = await self.anime_collection.insert_one(anime_doc)
-            return str(result.inserted_id) # Return the ID of the newly added anime
-        except Exception as e:
-            logger.error(f"Error adding anime '{anime_doc.get('title_english')}': {e}")
-            return None
-
-    async def get_anime_by_id_str(self, anime_id_str: str):
-        """Fetches an anime by its string representation of MongoDB _id."""
-        from bson import ObjectId, errors
+    # Functions for DELETING content (anime, season, episode, version) would go here.
+    # They would use $pull or update operations to remove items from arrays or delete documents.
+    # Example:
+    async def delete_anime_by_id_str(self, anime_id_str: str) -> bool:
         try:
             obj_id = ObjectId(anime_id_str)
-            return await self.anime_collection.find_one({"_id": obj_id})
-        except errors.InvalidId:
-            logger.warning(f"Invalid ObjectId string format: {anime_id_str}")
-            return None
+            result = await self.anime_collection.delete_one({"_id": obj_id})
+            # Also, potentially remove this anime_id_str from all users' watchlists
+            if result.deleted_count > 0:
+                await self.users_collection.update_many({}, {"$pull": {"watchlist": anime_id_str}})
+                logger.info(f"Deleted anime {anime_id_str} and removed from watchlists.")
+            return result.deleted_count > 0
         except Exception as e:
-            logger.error(f"Error fetching anime by id_str {anime_id_str}: {e}")
-            return None
-
-    async def_id)},
-            {"$set": update_data}
-        )
-        return result.modified_count > 0
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error updating anime details {anime_id}: {e}")
-        return False
-
-async def add_episode_to_season(anime_id: str, season_number: int, episode_data: dict):
-    """ Adds an episode to a specific season of an anime. """
-    try:
-        # Ensure episode_data includes at least episode_number and an empty versions array
-        episode_data.setdefault("versions", [])
-        result = anime_collection.update_one(
-            {"_id": ObjectId(anime_id), "seasons.season_number": season_number},
-            {"$push": {"seasons.$.episodes": episode_data}}
-        )
-        # If season doesn't exist, this won't work directly. Might need to $addToSet for seasons first
-        # Or ensure season structure is created when anime is added or when first managing episodes for it.
-        return result.modified_count > 0
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error adding episode to anime {anime_id} S{season_number}: {e}")
-        return False
-
-async def add_file_version_to_episode(anime_id: str, season_number: int, episode_number: int, version_data: dict):
-    """ Adds a file version to a specific episode. """
-    try:
-        version_data["upload_date"] = datetime.utcnow()
-        result = anime_collection.update_one(
-            {"_id": ObjectId(anime_id), "seasons.season_number": season_number, "seasons.episodes.episode_number": episode_number},
-            {"$push": {"seasons.$[s].episodes.$[e].versions": version_data}},
-            array_filters=[
-                {"s.season_number": season_number},
-                {"e.episode_number": episode_number}
-            ]
-        )
-        return result.modified_count > 0
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error adding file version to anime {anime_id} S{season_number}E{episode_number}: {e}")
-        return False
-
-async def set_episode_air_date(anime_id: str, season_number: int, episode_number: int, air_date: datetime | None):
-    try:
-        result = anime_collection.update_one(
-            {"_id": ObjectId(anime_id), "seasons.season_number": season_number, "seasons.episodes.episode_number": episode_number},
-            {"$set": {"seasons.$[s].episodes.$[e].air_date": air_date}},
-            array_filters=[
-                {"s.season_number": season_number},
-                {"e.episode_number": episode_number}
-            ]
-        )
-        if air_date and result.modified_count > 0: # If setting an air date, remove files for that episode
-            await clear_episode_file_versions(anime_id, season_number, episode_number)
-        return result.modified_count > 0
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error setting air date for anime {anime_id} S{season_number}E{episode_number}: {e}")
-        return False
-
-async def clear_episode_file_versions(anime_id: str, season_number: int, episode_number: int):
-    """Clears all file versions for an episode, useful when setting an air_date."""
-    try:
-        result = anime_collection.update_one(
-            {"_id": ObjectId(anime_id), "seasons.season_number": season_number, "seasons.episodes.episode_number": episode_number},
-            {"$set": {"seasons.$[s].episodes.$[e].versions": []}}, # Set versions to empty array
-            array_filters=[
-                {"s.season_number": season_number},
-                {"e.episode_number": episode_number}
-            ]
-        )
-        return result.modified_count > 0
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error clearing file versions for anime {anime_id} S{season_number}E{episode_number}: update_anime_details(self, anime_id_str: str, update_data: dict):
-        """Updates core details of an anime."""
-        from bson import ObjectId
-        obj_id = ObjectId(anime_id_str)
+            logger.error(f"Error deleting anime {anime_id_str}: {e}")
+            return False
+    
+    async def delete_season_from_anime(self, anime_id_str: str, season_num: int) -> bool:
         try:
+            obj_id = ObjectId(anime_id_str)
             result = await self.anime_collection.update_one(
                 {"_id": obj_id},
-                {"$set": update_data}
+                {"$pull": {"seasons": {"season_number": season_num}}}
             )
+            if result.modified_count > 0:
+                await self.anime_collection.update_one({"_id": obj_id}, {"$set": {"last_content_update": datetime.now(pytz.utc)}})
             return result.modified_count > 0
         except Exception as e:
-            logger.error(f"Error updating anime {anime_id_str}: {e}")
+            logger.error(f"Error deleting S{season_num} from anime {anime_id_str}: {e}")
             return False
 
-    async def add_episode_to_season(self, anime_id_str: str, season_number: int, episode_doc: dict):
-        """Adds an episode document to a specific season of an anime."""
-        from bson import ObjectId
-        obj_id = ObjectId(anime_id_str)
-        # Ensure versions in episode_doc have upload_date
-        if "versions" in episode_doc:
-            for version in episode_doc["versions"]:
-                version["upload_date"] = datetime.now(pytz.utc)
-
+    async def delete_episode_from_season(self, anime_id_str: str, season_num: int, episode_num: int) -> bool:
         try:
-            # Check if season exists, if not, create it with the episode
-            # This logic needs to be robust, using $push to an existing season's episodes array,
-            # or creating the season array element if it's the first episode of that season.
-
-            # Find the anime and the specific season
-            anime = await self.anime_collection.find_one({"_id": obj_id, "seasons.season_number": season_number})
-
-            if anime:
-                # Season exists, push to its episodes array
-                result = await self.anime_collection.update_one(
-                    {"_id": obj_id, "seasons.season_number": season_number},
-                    {"$push": {"seasons.$.episodes": episode_doc}}
-                )
-            else:
-                # Season does not exist, add it with the new episode
-                season_doc = {"season_number": season_number, "episodes": [episode_doc]}
-                result = await self.anime_collection.update_one(
-                    {"_id": obj_id},
-                    {"$push": {"seasons": season_doc}}
-                )
-            return result.modified_count > 0
-        except Exception as e:
-            logger.error(f"Error adding episode to S{season_number} of anime {anime_id_str}: {e}")
-            return False
-
-    async def add_file_version_to_episode(self, anime_id_str: str, season_number: int, episode_number: int, version_doc: dict):
-        from bson import ObjectId
-        obj_id = ObjectId(anime_id_str)
-        version_doc["upload_date"] = datetime.now(pytz.utc)
-        try:
-            # This is complex with nested arrays. Query for the specific episode.
-            # Then $push to its versions array.
-            # Using positional operator $ with arrayFilters for targeted update in nested arrays
+            obj_id = ObjectId(anime_id_str)
             result = await self.anime_collection.update_one(
-                {"_id": obj_id, "seasons.season_number": season_number, "seasons.episodes.episode_number": episode_number},
-                {"$push": {"seasons.$[s].episodes.$[e].versions": version_doc}},
+                {"_id": obj_id, "seasons.season_number": season_num},
+                {"$pull": {"seasons.$.episodes": {"episode_number": episode_num}}}
+            )
+            if result.modified_count > 0:
+                await self.anime_collection.update_one({"_id": obj_id}, {"$set": {"last_content_update": datetime.now(pytz.utc)}})
+            return result.modified_count > 0
+        except Exception as e:
+            logger.error(f"Error deleting S{season_num}E{episode_num} from anime {anime_id_str}: {e}")
+            return False
+
+    async def delete_file_version_from_episode(self, anime_id_str: str, season_num: int, episode_num: int, file_id_of_version_to_delete: str) -> bool:
+        try:
+            obj_id = ObjectId(anime_id_str)
+            # Pull a specific version object from the versions array based on its file_id
+            result = await self.anime_collection.update_one(
+                {"_id": obj_id}, # Target document
+                {"$pull": {"seasons.$[s].episodes.$[e].versions": {"file_id": file_id_of_version_to_delete}}},
                 array_filters=[
-                    {"s.season_number": season_number},
-                    {"e.episode_number": episode_number}
+                    {"s.season_number": season_num},
+                    {"e.episode_number": episode_num}
                 ]
             )
+            if result.modified_count > 0:
+                await self.anime_collection.update_one({"_id": obj_id}, {"$set": {"last_content_update": datetime.now(pytz.utc)}})
             return result.modified_count > 0
         except Exception as e:
-            logger.error(f"Error adding file version to S{season_number}E{episode_number} of anime {anime_id_str}: {e}")
+            logger.error(f"Error deleting file version ({file_id_of_version_to_delete}) from S{season_num}E{episode_num} of anime {anime_id_str}: {e}")
             return False
 
-    # (Add similar methods for remove_episode, remove_file_version, delete_anime, etc.)
 
-    # --- Anime Search and Browsing ---
-    async def search_anime_by_title(self, query: str, page: int = 1, per_page: int = 5):
-        """Searches anime by title_english using text index. Case-insensitive."""
-        skip_count = (page - 1) * per_page
- {e}")
-        return False
-
-
-async def increment_anime_download_count(anime_id: str):
-    try:
-        anime_collection.update_one({"_id": ObjectId(anime_id)}, {"$inc": {"download_count": 1}})
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error incrementing download count for anime {anime_id}: {e}")
-
-async def get_popular_anime(limit: int, page: int):
-    skip = (page - 1) * limit
-    try:
-        cursor = anime_collection.find().sort("download_count", -1).skip(skip).limit(limit)
-        total_count = anime_collection.count_documents({}) # Count all anime for pagination of popular
-        return list(cursor), total_count
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error getting popular anime: {e}")
-        return [], 0
-
-async def get_latest_episodes_anime_ids(limit: int, page: int):
-    """
-    This is complex. It should ideally find anime that had episodes whose file_versions were recently updated.
-    A simpler approach for now: Get recently added *anime series*.
-    True latest episodes require tracking episode update timestamps or querying nested arrays effectively.
-    
-    Simplified: Get anime series sorted by their own last_updated_date or added_date if more episodes were added.
-    Let's sort by anime 'last_updated_date' (which admin flow should update when new eps/versions added)
-    """
-    skip = (page - 1) * limit
-    try:
-        # This will get recently updated *anime series*, not individual episodes.
-        # Getting individual latest episodes correctly with pagination is more involved
-        # and might need denormalization or different schema for "latest_episodes" collection.
-        cursor = anime_collection.find().sort("last_updated_date", -1).skip(skip).limit(limit)
-        total_count = anime_collection.count_documents({})
-        return list(cursor), total_count
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error getting latest anime (series): {e}")
-        return [], 0
-
-async def get_anime_by_genre(genre: str, limit: int, page: int):
-    skip = (page - 1) * limit
-    query = {"genres": genre}
-    try:
-        cursor = anime_collection.find(query).skip(skip).limit(limit)
-        total_count = anime_collection.count_documents(query)
-        return list(cursor), total_count
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error getting anime by genre '{genre}': {e}")
-        return [], 0
-
-async def get_anime_by_status(status: str, limit: int, page: int):
-    skip = (page - 1) * limit
-    query = {"status": status}
-    try:
-        cursor = anime_collection.find(query).skip(skip).limit(limit)
-        total_count = anime_collection.count_documents(query)
-        return list(cursor), total_count
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error getting anime by status '{status}': {e}")
-        return [], 0
-
-
-# --- Referral Code Management ---
-async def create_referral_code(creator_user_id: int, referral_code: str, tokens_to_award: int, expiry_datetime: datetime):
-    try:
-        generated_referral_codes_collection.insert_one({
-            "referral_code": referral_code,
-            "creator_user_id": creator_user_id,
-            "tokens_to_award": tokens_to_award,
-            "expiry_date": expiry_datetime,
-            "is_claimed": False,
-            "claimed_by_user_id": None,
-            "creation_date": datetime.utcnow()
-        })
-        return True
-    except mongo_errors.DuplicateKeyError:
-        logger.warning(f"Attempted to insert duplicate referral code: {referral_code}")
-        return False # Or handle by regenerating code
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error creating referral code {referral_code}: {e}")
-        return False
-
-async def get_referral_code_data(referral_code: str):
-    try:
-        return generated_referral_codes_collection.find_one({"referral_code": referral_code})
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error getting referral code data {referral_code}: {e}")
-        return None
-
-async def mark_referral_code_claimed(referral_code: str, claimed_by_user_id: int):
-    try:
-        result = generated_referral_codes_collection.update_one(
-            {"referral_code": referral_code, "is_claimed": False}, # Ensure it's not already claimed
-            {"$set": {"is_claimed": True, "claimed_by_user_id": claimed        try:
-            # Using text search (ensure text index on title_english is created)
-            # MongoDB text search gives a score, we can sort by it
-            cursor = self.anime_collection.find(
-                {"$text": {"$search": query}},
-                {"score": {"$meta": "textScore"}}
-            ).sort([("score", {"$meta": "textScore"})]).skip(skip_count).limit(per_page)
-            
-            # Count total matching documents for pagination
-            # The count for a text search is not straightforward without running it again or a different way
-            # For simplicity, we might get more results and paginate client-side, or do a separate count.
-            # Let's try counting:
-            # total_items = await self.anime_collection.count_documents({"$text": {"$search": query}}) # May not be most efficient way
-
-            # To avoid a second query for count with text search, which can be tricky,
-            # we often fetch a bit more (e.g., per_page + 1) to see if there's a next page.
-            # Or, we make a trade-off. For now, simple count (might be slow):
-            
-            # Alternative: simpler regex search (case-insensitive) if text search isn't tuned
-            # regex_query = {"title_english": {"$regex": query, "$options": "i"}}
-            # cursor = self.anime_collection.find(regex_query).skip(skip_count).limit(per_page)
-            # total_items = await self.anime_collection.count_documents(regex_query)
-
-            # Let's stick with text search for "fuzzy" capabilities
-            results = [doc async for doc in cursor]
-            
-            # Rough way to get total_items with text search for pagination. This might not be perfectly accurate.
-            # A more robust pagination for text search often involves fetching IDs and then details.
-            # Or not showing total pages for text search, just prev/next.
-            # Let's assume `count_documents` works well enough for now for text search total.
-            total_items = await self.anime_collection.count_documents({"$text": {"$search": query}})
-
-            return results, total_items
-        except Exception as e:
-            logger.error(f"Error searching anime with query '{query}': {e}")
-            return [], 0
-
-    async def get_animes_by_filter(self, filter_criteria: dict, page: int = 1, per_page: int = 5, sort_by: list | None = None):
-        """Generic function to get anime by various filters with pagination and sorting."""
-        skip_count = (page - 1) * per_page
-        if sort_by is None:
-            sort_by = [("title_english", ASCENDING)] # Default sort
-
-        try:
-            cursor = self.anime_collection.find(filter_criteria).sort(sort_by).skip(skip_count).limit(per_page)
-            results = [doc async for doc in cursor]
-            total_items = await self.anime_collection.count_documents(filter_criteria)
-            return results, total_items
-        except Exception as e:
-            logger.error(f"Error fetching animes with filter {filter_criteria}: {e}")
-            return [], 0
-            
-    async def get_latest_episodes_anime(self, page: int = 1, per_page: int = 5):
-        """
-        Gets anime that had episodes added/updated recently.
-        This is tricky. We need to look at 'upload_date' inside episode versions.
-        One way is to unwind, sort, group. Or have a last_episode_update_date at the anime level.
-        For simplicity now: get animes sorted by their own 'last_updated_date' if we maintain that.
-        If we don't maintain 'last_updated_date' on anime doc when episodes are added:
-        This function needs to be a complex aggregation or this feature might need re-thinking.
-        
-        Let's assume an `anime_doc["last_content_update"]` field that is set on the anime document
-        whenever a new episode or version is added.
-        """
-        query = {} # Potentially filter by status like 'Ongoing'
-        sort_criteria = [("last_content_update", DESCENDING), ("title_english", ASCENDING)]
-        return await self.get_animes_by_filter(query, page, per_page, sort_by=sort_criteria)
-
-    async def get_popular_animes(_by_user_id}}
-        )
-        return result.modified_count > 0 # True if successfully marked
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error marking referral code {referral_code} as claimed: {e}")
-        return False
-
-# --- Admin Specific DB Functions ---
-async def get_all_user_ids():
-    """ Returns a list of all telegram_ids for broadcasting. """
-    try:
-        cursor = users_collection.find({}, {"telegram_id": 1, "_id": 0})
-        return [doc["telegram_id"] for doc in cursor]
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error getting all user IDs for broadcast: {e}")
-        return []
-
-async def count_total_users():
-    try:
-        return users_collection.count_documents({})
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error counting total users: {e}")
-        return 0
-
-async def count_premium_users():
-    try:
-        return users_collection.count_documents({"premium_status": True, "premium_expiry_date": {"$gte": datetime.utcnow()}})
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error counting premium users: {e}")
-        return 0
-
-# (Add more admin stat functions as needed, e.g., total anime, total downloads, etc.)
-
-# --- Request Logging (Optional, as main log is to channel) ---
-async def log_anime_request_to_db(user_id: int, user_first_name: str, anime_title: str, is_premium: bool):
-    """ Logs a request to the database. """
-    if not settings.REQUEST_CHANNEL_ID: # If channel logging is primary, DB log might be optional
-        pass # Or decide if DB log is always wanted
-
-    try:
-        requests_collection.insert_one({
-            "user_telegram_id": user_id,
-            "user_first_name": user_first_name,
-            "anime_title_requested": anime_title,
-            "is_premium_request": is_premium,
-            "request_date": datetime.utcnow(),
-            "status": "Pending_In_Channel" # Initial status
-        })
-        return True
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error logging anime request for user {user_id}: {e}")
-        return False
-
-async def update_request_status_in_db(request_db_id_str: str, new_status: str, admin_name: str):
-    """ Updates the status of a request logged in the DB, if using DB for requests. """
-    if not request_db_id_str: return False # If requests aren't stored with IDs in DB
-    try:
-        requests_collection.update_one(
-            {"_id": ObjectId(request_db_id_str)},
-            {"$set": {"status": new_status, "admin_handler_name": admin_name, "last_updated_date": datetime.utcnow()}}
-        )
-        return True
-    except mongo_errors.PyMongoError as e:
-        logger.error(f"MongoDB error updating request status for {request_db_id_str}: {e}")
-        return False
-    except Exception as e: # bson.errors.InvalidId
-        logger.error(f"Invalid request ID format for DB update {request_db_id_str}: {e}")
-        return False
-
-# IMPORTANT: Ensure your anime data insertion for seasons and episodes creates the correct nested structure.
-# For example, when adding a new anime, the 'seasons' array might be initialized like:
-# anime_data["seasons"] = [{"season_number": i, "episodes": []} for i in range(1, num_seasons + 1)]
+# Initialize a single instance of the Database class for the application to use
+db = Database()
