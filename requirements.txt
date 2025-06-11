@@ -5,4 +5,4 @@ fuzzywuzzy>=0.18.0
 python-levenshtein>=0.20.0 # Often a dependency for fuzzywuzzy for better performance
 aiohttp>=3.8.0 # For the health check server
 pytz>=2023.3 # For timezone handling with expiry dates
-# Add any other specific libraries if a feature requires it
+pydantic==2.6.4
