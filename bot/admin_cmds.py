@@ -1,6 +1,7 @@
 # bot/admin_cmds.py
 import logging
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import CallbackQueryHandler
 from telegram.ext import (
     ContextTypes,
     ConversationHandler,
