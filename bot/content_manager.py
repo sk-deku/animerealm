@@ -659,55 +659,16 @@ async def cm_ep_add_new_prompt_num(update: Update, context: ContextTypes.DEFAULT
     )
     return CM_EPISODE_NUMBER
 
-async def cm_ep_receive_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    ep_num_str = update.message.text.strip()
-    try:
-        ep_num = int(ep_num_str)
-        if ep_num <= 0: raise ValueError("Episode number must be positive.")
-    except ValueError:
-        await update.message.reply_html("Invalid episode number. Please enter a positive integer.")
-        return CM_EPISODE_NUMBER
-    
-    context.user_data['cm_current_episode_num'] = ep_num
-    # Clear previous file version data if any for new episode
-    context.user_data.pop('cm_current_file_version_data', None)
 
-    anime_title = "Selected Anime" # Get from context.user_data if needed
+async def cm_ep_add_new_ep_num_retry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
     s_num = context.user_data.get('cm_current_season_num', 'N/A')
-
-    # Check if episode already exists for this season
-    anime_id = context.user_data.get('cm_current_anime_id')
-    if anime_id:
-        anime_doc = await anidb.get_anime_by_id_str(anime_id)
-        if anime_doc:
-            anime_title = anime_doc.get("title_english", "Selected Anime")
-            season_data = next((s for s in anime_doc.get("seasons", []) if s["season_number"] == s_num), None)
-            if season_data:
-                existing_ep = next((e for e in season_data.get("episodes", []) if e["episode_number"] == ep_num), None)
-                if existing_ep:
-                    await update.message.reply_html(
-                        f"{strings.EMOJI_ERROR} Episode {ep_num} already exists in S{s_num} for this anime.\n"
-                        f"You can modify it or choose a different episode number.",
-                        reply_markup=InlineKeyboardMarkup([
-                            # [InlineKeyboardButton(f"{EMOJI_EDIT} Modify EP {ep_num}", callback_data=f"cm_ep_force_modify_{ep_num}")],
-                            [InlineKeyboardButton("🔄 Try Different EP Number", callback_data="cm_ep_add_new_ep_num_retry")],
-                            [InlineKeyboardButton(strings.BTN_CANCEL_OPERATION, callback_data="cm_cancel_op_back_to_season_menu")]
-                         ])
-                    )
-                    return CM_EPISODE_NUMBER # Stay in state or specific error state
-
-    text = strings.CM_EPISODE_FILE_OR_DATE.format(
-        season_num=s_num,
-        episode_num=ep_num,
-        anime_title=anime_title
+    await query.edit_message_text(
+        text=strings.CM_EPISODE_PROMPT_NUM.format(season_num=s_num),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(strings.BTN_CANCEL_OPERATION, callback_data="cm_cancel_op_back_to_season_menu")]])
     )
-    keyboard = [
-        [InlineKeyboardButton(strings.BTN_CM_ADD_EPISODE_FILES, callback_data="cm_ep_choice_add_files")],
-        [InlineKeyboardButton(strings.BTN_CM_SET_RELEASE_DATE, callback_data="cm_ep_choice_set_date")],
-        [InlineKeyboardButton(strings.BTN_CANCEL_OPERATION, callback_data="cm_cancel_op_back_to_season_menu")]
-    ]
-    await update.message.reply_html(text=text, reply_markup=InlineKeyboardMarkup(keyboard))
-    return CM_EPISODE_FILE_OR_DATE
+    return CM_EPISODE_NUMBER
 
 
 # --- Shared SEASON & EPISODE MANAGEMENT (from previous response, ensure paths correct) ---
