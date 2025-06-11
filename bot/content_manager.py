@@ -1134,7 +1134,7 @@ def get_manage_content_conv_handler() -> ConversationHandler:
             CM_EPISODE_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, cm_ep_receive_number),
                                 CallbackQueryHandler(cm_ep_add_new_ep_num_retry, pattern="^cm_ep_add_new_ep_num_retry$")], # if retry num
             CM_EPISODE_FILE_OR_DATE: [CallbackQueryHandler(cm_ep_handle_choice_file_or_date, pattern="^cm_ep_choice_")],
-            CM_EPISODE_SEND_FILE: [MessageHandler(filters.VIDEO.ALL | filters.Document.ALL, cm_ep_receive_file)],
+            CM_EPISODE_SEND_FILE: [MessageHandler(filters.VIDEO | filters.DOCUMENT, cm_ep_receive_file)],
             CM_EPISODE_SELECT_RESOLUTION: [CallbackQueryHandler(cm_ep_receive_resolution, pattern="^cm_ep_file_res_")],
             CM_EPISODE_SELECT_AUDIO: [CallbackQueryHandler(cm_ep_receive_audio_lang, pattern="^cm_ep_file_audio_")],
             CM_EPISODE_SELECT_SUB: [CallbackQueryHandler(cm_ep_receive_sub_lang_and_save_version, pattern="^cm_ep_file_sub_")],
