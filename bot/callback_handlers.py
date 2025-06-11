@@ -6,7 +6,7 @@ from telegram.constants import ParseMode
 from . import watchlist # Add import
 from configs import settings, strings
 from database.mongo_db import db as anidb # Assuming anidb is your Database instance
-
+from . import downloads # Add import
 from . import anime_browser # Import the module
 # Import functions from other modules that will handle specific actions
 from .core_handlers import reply_with_main_menu, help_command # Re-show main menu or help
@@ -161,40 +161,6 @@ async def main_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await handle_request_anime_callback(update, context, anime_title_to_request)
         return
 
-    # --- Add other specific, non-conversational callback handlers here ---
-    # For example, callbacks to add/remove from watchlist if they are simple actions
-    # and not part of a larger conversation flow.
-
-    # Example: Watchlist add/remove (if anime_id is in callback_data)
-    # This is a very common pattern
-    if callback_data.startswith("wl_add_"):
-        anime_id_to_add = callback_data.split("wl_add_", 1)[1]
-        await watchlist.add_to_watchlist_callback(update, context, anime_id_to_add)
-        return
-    elif callback_data.startswith("wl_rem_"):
-        anime_id_to_remove = callback_data.split("wl_rem_", 1)[1]
-        await watchlist.remove_from_watchlist_callback(update, context, anime_id_to_remove)
-        return
-
-    # --- Admin actions from request channel ---
-    if callback_data.startswith("admin_req_"): # e.g., admin_req_fulfill_REQUESTDBID_USERID
-        from .anime_requests import handle_admin_request_channel_action
-        await handle_admin_request_channel_action(update, context)
-        return
-
-
-    # --- Download file callback ---
-    # Expected format: "dl_{anime_id_str}_{season_num}_{episode_num}_{version_index}"
-    # where version_index is the index of the file version in the episode's versions array
-    if callback_data.startswith("dl_"):
-        from .downloads import handle_download_callback
-        await handle_download_callback(update, context)
-        return
-
-    logger.warning(f"Unhandled callback_data: {callback_data} from user {user.id}")
-    # Default behavior for unhandled callbacks could be an alert or just ignore.
-    # await query.answer("This button doesn't do anything yet or is part of a different flow.", show_alert=True) # Can be noisy
-
     elif callback_data.startswith("wl_add_"):
         anime_id_to_add = callback_data.split("wl_add_", 1)[1]
         await watchlist.add_to_watchlist_callback(update, context, anime_id_to_add) # Already had this
@@ -247,3 +213,28 @@ async def main_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     elif callback_data.startswith("br_status_"): # Selected a status
         await anime_browser.browse_by_status_results(update, context) # Will parse status from callback_data
         return
+
+    # From search "No results" message -> reqanime_{ANIME_TITLE}
+    elif callback_data.startswith("reqanime_"):
+        encoded_title = callback_data.split("reqanime_", 1)[1]
+        decoded_title = unquote_plus(encoded_title) # unquote_plus for URL decoding
+        await anime_requests.handle_request_anime_callback(update, context, decoded_title)
+        return
+
+    # Callbacks for free user request confirmation -> req_conf_yes_{TITLE} or req_conf_no
+    elif callback_data.startswith("req_conf_yes_") or callback_data == "req_conf_no":
+        await anime_requests.handle_free_request_confirmation(update, context)
+        return
+
+    # Callbacks from admins in request channel -> admin_req_ACTION_USERID_ENCODEDTITLE
+    elif callback_data.startswith("admin_req_"):
+        await anime_requests.handle_admin_request_channel_action(update, context)
+        return
+
+    elif callback_data.startswith("dl_"):
+        await downloads.handle_download_callback(update, context)
+        return
+
+    logger.warning(f"Unhandled callback_data: {callback_data} from user {user.id}")
+    # Default behavior for unhandled callbacks could be an alert or just ignore.
+    # await query.answer("This button doesn't do anything yet or is part of a different flow.", show_alert=True) # Can be noisy
