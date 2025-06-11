@@ -1,5 +1,5 @@
 # configs/strings.py
-from configs import settings
+BOT_USERNAME = "Anime_Realm_Bot"
 
 # --- Emojis (reuse for consistency) ---
 EMOJI_WELCOME = "🎉"
