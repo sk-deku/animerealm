@@ -76,8 +76,7 @@ async def post_init(application: Application):
         BotCommand("latest", "🆕 See latest episode additions"),
         BotCommand("my_watchlist", "💖 Manage your watchlist"),
         BotCommand("profile", "👤 View your profile & tokens"),
-        BotCommand("get_tokens", "🪙 Learn how to earn free tokens"),
-        BotCommand("gen_token_link", "🔗 Generate your referral link"),
+        BotCommand("gen_tokens", "🔗 Generate link and Earn Tokens"),
         BotCommand("premium", "💎 View premium options"),
         BotCommand("cancel", "❌ Cancel current operation"),
     ]
@@ -147,8 +146,7 @@ async def main():
     # --- User Command Handlers ---
     application.add_handler(CommandHandler("profile", user_cmds.profile_command))
     application.add_handler(CommandHandler("premium", user_cmds.premium_info_command))
-    application.add_handler(CommandHandler("get_tokens", token_system.get_tokens_info_command)) # Explanation
-    application.add_handler(CommandHandler("gen_token_link", token_system.generate_token_link_command)) # User generates link
+    application.add_handler(CommandHandler("gen_tokens", token_system.generate_and_show_token_link_command)) # User generates link
 
 
     # --- Anime Discovery Handlers ---
