@@ -562,15 +562,6 @@ async def cm_mod_manage_episodes_menu_cb(update: Update, context: ContextTypes.D
     
     return await cm_goto_season_episode_mgmt(update, context) # Re-use the handler
 
-
-# --- Shared SEASON & EPISODE MANAGEMENT (from previous response, ensure paths correct) ---
-# Functions like cm_goto_season_episode_mgmt, cm_ep_add_new_prompt_num etc.
-# These will need to be robust to the 'cm_flow' ('add' or 'modify' or 'manage_episodes')
-# and current_anime_id to load/save correctly.
-# The cancel operations also need to route back correctly. E.g., cm_cancel_op_back_to_season_menu should work.
-# (Code for these shared parts from previous iteration is assumed here)
-# ... cm_goto_season_episode_mgmt, cm_ep_add_new_prompt_num ... cm_ep_set_release_date_receive ...
-
 async def cm_goto_season_episode_mgmt(update: Update, context: ContextTypes.DEFAULT_TYPE, called_from_finish_ep: bool = False) -> int: # Added param
     query = update.callback_query
     if query and not called_from_finish_ep : await query.answer()
@@ -658,6 +649,76 @@ async def cm_goto_season_episode_mgmt(update: Update, context: ContextTypes.DEFA
         await update.message.reply_html(text=msg_text, reply_markup=reply_markup)
     return CM_MANAGE_SEASON_MENU
 
+async def cm_ep_add_new_prompt_num(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    s_num = context.user_data.get('cm_current_season_num', 'N/A')
+    await query.edit_message_text(
+        text=strings.CM_EPISODE_PROMPT_NUM.format(season_num=s_num),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(strings.BTN_CANCEL_OPERATION, callback_data="cm_cancel_op_back_to_season_menu")]])
+    )
+    return CM_EPISODE_NUMBER
+
+async def cm_ep_receive_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    ep_num_str = update.message.text.strip()
+    try:
+        ep_num = int(ep_num_str)
+        if ep_num <= 0: raise ValueError("Episode number must be positive.")
+    except ValueError:
+        await update.message.reply_html("Invalid episode number. Please enter a positive integer.")
+        return CM_EPISODE_NUMBER
+    
+    context.user_data['cm_current_episode_num'] = ep_num
+    # Clear previous file version data if any for new episode
+    context.user_data.pop('cm_current_file_version_data', None)
+
+    anime_title = "Selected Anime" # Get from context.user_data if needed
+    s_num = context.user_data.get('cm_current_season_num', 'N/A')
+
+    # Check if episode already exists for this season
+    anime_id = context.user_data.get('cm_current_anime_id')
+    if anime_id:
+        anime_doc = await anidb.get_anime_by_id_str(anime_id)
+        if anime_doc:
+            anime_title = anime_doc.get("title_english", "Selected Anime")
+            season_data = next((s for s in anime_doc.get("seasons", []) if s["season_number"] == s_num), None)
+            if season_data:
+                existing_ep = next((e for e in season_data.get("episodes", []) if e["episode_number"] == ep_num), None)
+                if existing_ep:
+                    await update.message.reply_html(
+                        f"{strings.EMOJI_ERROR} Episode {ep_num} already exists in S{s_num} for this anime.\n"
+                        f"You can modify it or choose a different episode number.",
+                        reply_markup=InlineKeyboardMarkup([
+                            # [InlineKeyboardButton(f"{EMOJI_EDIT} Modify EP {ep_num}", callback_data=f"cm_ep_force_modify_{ep_num}")],
+                            [InlineKeyboardButton("🔄 Try Different EP Number", callback_data="cm_ep_add_new_ep_num_retry")],
+                            [InlineKeyboardButton(strings.BTN_CANCEL_OPERATION, callback_data="cm_cancel_op_back_to_season_menu")]
+                         ])
+                    )
+                    return CM_EPISODE_NUMBER # Stay in state or specific error state
+
+    text = strings.CM_EPISODE_FILE_OR_DATE.format(
+        season_num=s_num,
+        episode_num=ep_num,
+        anime_title=anime_title
+    )
+    keyboard = [
+        [InlineKeyboardButton(strings.BTN_CM_ADD_EPISODE_FILES, callback_data="cm_ep_choice_add_files")],
+        [InlineKeyboardButton(strings.BTN_CM_SET_RELEASE_DATE, callback_data="cm_ep_choice_set_date")],
+        [InlineKeyboardButton(strings.BTN_CANCEL_OPERATION, callback_data="cm_cancel_op_back_to_season_menu")]
+    ]
+    await update.message.reply_html(text=text, reply_markup=InlineKeyboardMarkup(keyboard))
+    return CM_EPISODE_FILE_OR_DATE
+
+
+# --- Shared SEASON & EPISODE MANAGEMENT (from previous response, ensure paths correct) ---
+# Functions like cm_goto_season_episode_mgmt, cm_ep_add_new_prompt_num etc.
+# These will need to be robust to the 'cm_flow' ('add' or 'modify' or 'manage_episodes')
+# and current_anime_id to load/save correctly.
+# The cancel operations also need to route back correctly. E.g., cm_cancel_op_back_to_season_menu should work.
+# (Code for these shared parts from previous iteration is assumed here)
+# ... cm_goto_season_episode_mgmt, cm_ep_add_new_prompt_num ... cm_ep_set_release_date_receive ...
+
+
 async def cm_switch_working_season(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
     new_season_num = int(query.data.split("cm_switch_season_",1)[1])
@@ -687,19 +748,251 @@ async def cm_ep_add_new_prompt(update: Update, context: ContextTypes.DEFAULT_TYP
 # please refer to their logic in the previous provided code for `content_manager.py`.
 # Crucial: Ensure their state transitions and cancel callbacks are contextual.
 
-# (Assuming these EPISODE related functions are here, with correct callback_data for cancel operations etc.)
-# cm_ep_receive_number...
-# cm_ep_handle_choice_file_or_date...
-# cm_ep_receive_file...
-# cm_ep_receive_resolution...
-# cm_ep_receive_audio_lang...
-# cm_ep_receive_sub_lang_and_save_version... (Success here should give options: another_version, next_ep, done_season)
-# cm_ep_add_another_version (go back to CM_EPISODE_SEND_FILE)
-# cm_ep_add_next_ep_for_season (go to CM_EPISODE_NUMBER with next ep# suggested)
-# cm_ep_set_release_date_receive (DB call, then options: next_ep, done_season)
-# These all are included in the previous more complete response. Copying them here will make this too long.
 
-# Re-pasting the core SAVE VERSION for EPISODE for clarity
+
+async def cm_ep_receive_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    ep_num_str = update.message.text.strip()
+    try:
+        ep_num = int(ep_num_str)
+        if ep_num <= 0: raise ValueError("Episode number must be positive.")
+    except ValueError:
+        await update.message.reply_html("Invalid episode number. Please enter a positive integer.")
+        return CM_EPISODE_NUMBER
+    
+    context.user_data['cm_current_episode_num'] = ep_num
+    # Clear previous file version data if any for new episode
+    context.user_data.pop('cm_current_file_version_data', None)
+
+    anime_title = "Selected Anime" # Get from context.user_data if needed
+    s_num = context.user_data.get('cm_current_season_num', 'N/A')
+
+    # Check if episode already exists for this season
+    anime_id = context.user_data.get('cm_current_anime_id')
+    if anime_id:
+        anime_doc = await anidb.get_anime_by_id_str(anime_id)
+        if anime_doc:
+            anime_title = anime_doc.get("title_english", "Selected Anime")
+            season_data = next((s for s in anime_doc.get("seasons", []) if s["season_number"] == s_num), None)
+            if season_data:
+                existing_ep = next((e for e in season_data.get("episodes", []) if e["episode_number"] == ep_num), None)
+                if existing_ep:
+                    await update.message.reply_html(
+                        f"{strings.EMOJI_ERROR} Episode {ep_num} already exists in S{s_num} for this anime.\n"
+                        f"You can modify it or choose a different episode number.",
+                        reply_markup=InlineKeyboardMarkup([
+                            # [InlineKeyboardButton(f"{EMOJI_EDIT} Modify EP {ep_num}", callback_data=f"cm_ep_force_modify_{ep_num}")],
+                            [InlineKeyboardButton("🔄 Try Different EP Number", callback_data="cm_ep_add_new_ep_num_retry")],
+                            [InlineKeyboardButton(strings.BTN_CANCEL_OPERATION, callback_data="cm_cancel_op_back_to_season_menu")]
+                         ])
+                    )
+                    return CM_EPISODE_NUMBER # Stay in state or specific error state
+
+    text = strings.CM_EPISODE_FILE_OR_DATE.format(
+        season_num=s_num,
+        episode_num=ep_num,
+        anime_title=anime_title
+    )
+    keyboard = [
+        [InlineKeyboardButton(strings.BTN_CM_ADD_EPISODE_FILES, callback_data="cm_ep_choice_add_files")],
+        [InlineKeyboardButton(strings.BTN_CM_SET_RELEASE_DATE, callback_data="cm_ep_choice_set_date")],
+        [InlineKeyboardButton(strings.BTN_CANCEL_OPERATION, callback_data="cm_cancel_op_back_to_season_menu")]
+    ]
+    await update.message.reply_html(text=text, reply_markup=InlineKeyboardMarkup(keyboard))
+    return CM_EPISODE_FILE_OR_DATE
+
+
+async def cm_ep_handle_choice_file_or_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    choice = query.data # "cm_ep_choice_add_files" or "cm_ep_choice_set_date"
+
+    s_num = context.user_data.get('cm_current_season_num', 'N/A')
+    ep_num = context.user_data.get('cm_current_episode_num', 'N/A')
+    anime_title = "Selected Anime" # Get from context
+
+    if choice == "cm_ep_choice_add_files":
+        context.user_data['cm_current_file_version_data'] = {} # Init for this version
+        await query.edit_message_text(
+            text=strings.CM_PROMPT_SEND_FILE.format(s_num=s_num, ep_num=ep_num, anime_title=anime_title),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(strings.BTN_CANCEL_OPERATION, callback_data="cm_cancel_op_back_to_ep_choice")]])
+        )
+        return CM_EPISODE_SEND_FILE
+    elif choice == "cm_ep_choice_set_date":
+        await query.edit_message_text(
+            text=strings.CM_PROMPT_RELEASE_DATE.format(s_num=s_num, ep_num=ep_num),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(strings.BTN_CANCEL_OPERATION, callback_data="cm_cancel_op_back_to_ep_choice")]])
+        )
+        return CM_EPISODE_SET_RELEASE_DATE
+    return CM_EPISODE_FILE_OR_DATE # Should not happen
+
+# Placeholder for CM_EPISODE_SEND_FILE logic and subsequent states (resolution, audio, sub)
+# These would follow a similar pattern: receive input, store in context.user_data['cm_current_file_version_data'], prompt for next.
+# Finally, when all version data is collected, it would be added to the episode in DB.
+
+async def cm_ep_receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    file_id = None
+    file_type = None
+    file_size = 0
+
+    if update.message.document:
+        file_id = update.message.document.file_id
+        file_type = "document"
+        file_size = update.message.document.file_size
+    elif update.message.video:
+        file_id = update.message.video.file_id
+        file_type = "video"
+        file_size = update.message.video.file_size
+    else:
+        await update.message.reply_html("Invalid file type. Please send a video or document file.")
+        return CM_EPISODE_SEND_FILE
+
+    context.user_data['cm_current_file_version_data'] = {
+        "file_id": file_id,
+        "file_type": file_type,
+        "file_size_bytes": file_size
+    }
+
+    # Prompt for resolution
+    buttons = []
+    row = []
+    for res in settings.SUPPORTED_RESOLUTIONS:
+        row.append(InlineKeyboardButton(res, callback_data=f"cm_ep_file_res_{res}"))
+        if len(row) >= 3: # Example button layout
+            buttons.append(row)
+            row = []
+    if row: buttons.append(row)
+    buttons.append([InlineKeyboardButton(strings.BTN_CANCEL_OPERATION, callback_data="cm_cancel_op_back_to_ep_choice")])
+
+    await update.message.reply_html(
+        text=strings.CM_PROMPT_RESOLUTION,
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return CM_EPISODE_SELECT_RESOLUTION
+
+
+async def cm_ep_receive_resolution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    res = query.data.split("cm_ep_file_res_",1)[1]
+    context.user_data['cm_current_file_version_data']['resolution'] = res
+
+    # Prompt for audio lang
+    buttons = []
+    row = []
+    for lang in settings.SUPPORTED_AUDIO_LANGUAGES:
+        row.append(InlineKeyboardButton(lang, callback_data=f"cm_ep_file_audio_{lang.split(' ')[0]}"))
+        if len(row) >= 2: # Example button layout
+            buttons.append(row)
+            row = []
+    if row: buttons.append(row)
+    buttons.append([InlineKeyboardButton(strings.BTN_CANCEL_OPERATION, callback_data="cm_cancel_op_back_to_ep_choice")])
+
+
+    await query.edit_message_text(
+        text=strings.CM_PROMPT_AUDIO_LANG,
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode=ParseMode.HTML
+    )
+    return CM_EPISODE_SELECT_AUDIO
+
+async def cm_ep_receive_audio_lang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    lang_key = query.data.split("cm_ep_file_audio_",1)[1]
+    
+    full_lang_name = next((l for l in settings.SUPPORTED_AUDIO_LANGUAGES if l.startswith(lang_key)), lang_key) # Find full name
+    context.user_data['cm_current_file_version_data']['audio_language'] = full_lang_name
+
+
+    # Prompt for sub lang
+    buttons = []
+    row = []
+    for lang in settings.SUPPORTED_SUB_LANGUAGES:
+        row.append(InlineKeyboardButton(lang, callback_data=f"cm_ep_file_sub_{lang.split(' ')[0]}"))
+        if len(row) >= 2: # Example button layout
+            buttons.append(row)
+            row = []
+    if row: buttons.append(row)
+    buttons.append([InlineKeyboardButton(strings.BTN_CANCEL_OPERATION, callback_data="cm_cancel_op_back_to_ep_choice")])
+
+
+    await query.edit_message_text(
+        text=strings.CM_PROMPT_SUB_LANG,
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode=ParseMode.HTML
+    )
+    return CM_EPISODE_SELECT_SUB
+
+async def cm_ep_add_another_version(update:Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    s_num = context.user_data.get('cm_current_season_num', 'N/A')
+    ep_num = context.user_data.get('cm_current_episode_num', 'N/A')
+    anime_title = "Selected Anime" # Get from context
+
+    context.user_data['cm_current_file_version_data'] = {} # Init for new version
+    await query.edit_message_text(
+        text=strings.CM_PROMPT_SEND_FILE.format(s_num=s_num, ep_num=ep_num, anime_title=anime_title),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(strings.BTN_CANCEL_OPERATION, callback_data="cm_cancel_op_back_to_season_menu")]])
+    )
+    return CM_EPISODE_SEND_FILE
+
+async def cm_ep_add_next_ep_for_season(update:Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    current_ep_num = context.user_data.get('cm_current_episode_num', 0)
+    context.user_data['cm_current_episode_num'] = current_ep_num + 1 # Tentatively set next
+    
+    s_num = context.user_data.get('cm_current_season_num', 'N/A')
+    # Directly prompt for the new (next) episode number to confirm or change
+    await query.edit_message_text(
+        text=strings.CM_EPISODE_PROMPT_NUM.format(season_num=s_num) + f"\n(Suggested next: EP {current_ep_num+1})",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(strings.BTN_CANCEL_OPERATION, callback_data="cm_cancel_op_back_to_season_menu")]])
+    )
+    return CM_EPISODE_NUMBER
+
+
+async def cm_ep_set_release_date_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receives release date and saves episode with only this info."""
+    date_str = update.message.text.strip().upper()
+    s_num = context.user_data.get('cm_current_season_num')
+    ep_num = context.user_data.get('cm_current_episode_num')
+    anime_id = context.user_data.get('cm_current_anime_id')
+
+    air_date = None
+    if date_str != "TBA":
+        try:
+            air_date = datetime.strptime(date_str, "%Y-%m-%d")
+            air_date = pytz.utc.localize(air_date) # Make it timezone aware (UTC)
+        except ValueError:
+            await update.message.reply_html("Invalid date format. Please use YYYY-MM-DD or type 'TBA'.")
+            return CM_EPISODE_SET_RELEASE_DATE
+
+    episode_data = {
+        "episode_number": ep_num,
+        "air_date": air_date if date_str != "TBA" else "TBA", # Store string "TBA" or datetime obj
+        "versions": []
+    }
+    
+    # Robust function needed in DB to add/update episode with this data
+    success = await anidb.add_or_update_episode_data(anime_id, s_num, ep_num, episode_data, only_air_date=True)
+
+    if success:
+        await anidb.anime_collection.update_one({"_id": ObjectId(anime_id)}, {"$set": {"last_content_update": datetime.now(pytz.utc)}})
+        display_date = date_str if date_str == "TBA" else air_date.strftime("%Y-%m-%d")
+        msg = strings.CM_RELEASE_DATE_SET.format(s_num=s_num, ep_num=ep_num, date=display_date)
+        # Options: add next episode, finish season
+        keyboard = [
+            [InlineKeyboardButton(strings.BTN_CM_NEXT_EPISODE, callback_data="cm_ep_add_next_ep_for_season")],
+            [InlineKeyboardButton(strings.BTN_CM_FINISH_SEASON_EPISODES, callback_data="cm_ep_done_with_season")]
+        ]
+        await update.message.reply_html(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        return CM_MANAGE_SEASON_MENU # Back to season management menu or options after adding
+    else:
+        await update.message.reply_html(f"{strings.EMOJI_ERROR} Failed to set release date. DB error.")
+        return CM_MANAGE_SEASON_MENU
+
+
 async def cm_ep_receive_sub_lang_and_save_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
     lang_key = query.data.split("cm_ep_file_sub_",1)[1]
