@@ -14,7 +14,7 @@ from .user_cmds import profile_command, premium_info_command # Show profile or p
 from .anime_search import search_anime_command_entry # Initiate search
 from .anime_browser import browse_start_command, popular_anime_command, latest_anime_command
 from .watchlist import view_watchlist_command
-from .token_system import get_tokens_info_command # Show how to get tokens
+from . import token_system 
 from .admin_cmds import admin_panel_main # If you have a main admin panel triggered by callback
 
 logger = logging.getLogger(__name__)
