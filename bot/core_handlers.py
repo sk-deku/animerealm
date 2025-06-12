@@ -313,6 +313,16 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     #         await context.bot.send_message(chat_id=dev_chat_id, text=error_message[i:i+4096], parse_mode=ParseMode.HTML)
 
 
+# In bot/core_handlers.py
+def register_handlers(application: Application):
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("cancel", cancel_command))
+    application.add_error_handler(error_handler)
+    # (Add job queue scheduling here if not done in main_ptb_bot_loop directly)
+    logger.info("Core handlers registered.")
+
+
 # --- Job Queue Callbacks ---
 async def check_expired_premiums_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Job to check for and deactivate expired premium memberships."""
