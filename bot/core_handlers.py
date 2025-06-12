@@ -2,7 +2,7 @@
 import logging
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from telegram.ext import ContextTypes, ConversationHandler
-from telegram.ext import Application
+from telegram.ext import Application, CommandHandler
 from telegram.constants import ParseMode
 from datetime import datetime, timedelta
 import pytz # For timezone awareness if needed
