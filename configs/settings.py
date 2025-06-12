@@ -99,6 +99,10 @@ GENRE_BUTTONS_PER_ROW = int(os.getenv("GENRE_BUTTONS_PER_ROW", 3)) # For selecti
 PAGINATION_BUTTONS_PER_ROW = 2 # For "Previous", "Next"
 
 
+HEALTH_CHECK_PORT = int(os.getenv("PORT", 8080)) # Koyeb typically sets PORT env var
+HEALTH_CHECK_HOST = "0.0.0.0"
+
+
 # --- Validation and Error Checks for Critical Configs ---
 essential_vars = {
     "BOT_TOKEN": BOT_TOKEN,
