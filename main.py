@@ -244,9 +244,13 @@ async def main_bot_loop():
     # --- Start PTB Polling ---
     try:
         logger.info("PTB Application initializing...")
-        await application.initialize() # Initializes handlers, updater, etc.
         logger.info("PTB Application starting updater and polling...")
-        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
+        await application.updater.wait_until_closed()
+       # await application.stop()
+
         # `start()` method starts dispatcher and job_queue if used, called by initialize already in effect.
         # For polling, explicitly calling updater.start_polling is needed.
         logger.info("✅ PTB Polling started successfully and bot is running.")
