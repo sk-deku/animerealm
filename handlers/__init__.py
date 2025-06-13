@@ -1,14 +1,17 @@
 # handlers/__init__.py
-# List the names of the files containing handlers to be loaded
-__all__ = [
-    "common_handlers",
-    "admin_handlers", # Will uncomment/add as we create them
-    "browse_handler",
-    "search_handler",
-    "download_handler",
-    "request_handler",
-    "watchlist_handler",
-    "tokens_handler",
-    "callback_handlers",
-    "content_handler", # For admin manage_content
-]
+# Pyrogram loads all modules imported in this file as plugins
+# Add any handler modules you create here
+
+from . import common_handlers
+from . import admin_handlers
+from . import browse_handler
+from . import search_handler
+from . import download_handler
+from . import request_handler
+from . import content_handler
+from . import watchlist_handler
+from . import tokens_handler
+from . import callback_handlers
+
+# Note: We'll uncomment these imports as we create the respective files.
+# For now, only common_handlers is needed to start.
