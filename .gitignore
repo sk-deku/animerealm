@@ -24,5 +24,5 @@ dist/
 data/
 *.db
 
-# Specific to project if any large files are cached locally
-# Add directories where large temporary files might be stored by Pyrogram
+
+
