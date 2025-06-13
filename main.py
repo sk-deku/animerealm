@@ -61,16 +61,26 @@ except AuthKeyUnregistered:
      logging.critical("Your Pyrogram session key is invalid or has expired.")
      sys.exit(1)
 
-
-# --- Database Initialization (Placeholder) ---
+# --- Database Initialization ---
+# This function now calls the init_db from the database module
 async def init_database():
-    logging.info("Initializing database...")
+    logging.info("Initializing database connection...")
     # Here we would import and call database connection and setup functions
     from database.mongo_db import init_db
-    await init_db(MONGO_URI) # This function needs to be implemented
+    from config import MONGO_URI # Ensure MONGO_URI is imported or passed correctly
 
-    logging.info("Database initialized successfully.")
+    if not MONGO_URI:
+         logging.critical("MONGO_URI environment variable is not set! Cannot connect to database.")
+         # We might raise an error here that sys.exit in main handles
+         # For now, logging critical and continuing might be okay if other parts can run, but risky.
+         # Better to halt startup if DB is essential.
+         sys.exit(1) # Halt startup if database connection is critical
 
+    try:
+        await init_db(MONGO_URI) # Call the async function to connect and set up indices
+    except Exception as e:
+         logging.critical(f"Database initialization failed: {e}")
+         sys.exit(1) # Halt startup if database initialization fails
 
 # --- Event Loop and Bot Start ---
 async def main():
