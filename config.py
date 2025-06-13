@@ -24,6 +24,7 @@ PAGE_SIZE = 15
 START_TOKENS = 5
 # Number of tokens awarded per successful token link redemption
 TOKENS_PER_REDEEM = 1 # Can be overridden by .env, but good default
+REQUEST_TOKEN_COST = 3 # Example: Costs 5 tokens per request
 
 # --- Token Link Configuration ---
 # URL Shortener configuration - Load from .env for sensitive info, provide structure here
