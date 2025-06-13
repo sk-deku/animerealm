@@ -15,20 +15,6 @@ def hello_world():
   # Let's make the route specific for the health check
   return 'Hello, from Flask Health Check!', 200 # Return status code 200 (OK) explicitly
 
-
-# Let's add a /healthz endpoint specifically as used in health checks
-@app.route('/healthz')
-def health_check():
-    # This is the endpoint Koyeb's health check will hit
-    # Just return a simple 200 OK
-    return 'OK', 200 # Standard HTTP status code 200 for OK
-
-# Note: Standard production WSGI runners (like Gunicorn) expect
-# 'application' or 'app' object accessible in the file/module to run.
-# Your `app = Flask(__name__)` and `app` variable works for this.
-
-# This __main__ block is typically used for local development server (flask run or python app.py)
-# Production WSGI runners ignore this __main__ block.
 if __name__ == '__main__':
   # This block will NOT run when Gunicorn/Waitress runs app.py on Koyeb
   # It's only for running with the simple Flask development server (not suitable for production)
