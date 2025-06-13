@@ -1,4 +1,6 @@
 pyrogram[listen]==2.0.* # Using listen feature for updates
+python-telegram-bot==20.7
+tgcrypto
 pymongo[srv]==3.12.3
 python-dotenv
 fuzzywuzzy[speedup]==0.18.* # Using speedup version for Levenshtein
