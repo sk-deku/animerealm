@@ -26,22 +26,24 @@ content_logger = logging.getLogger(__name__)
 # These will be stored in the user_states collection
 # Handler Name: "content_management"
 class ContentState:
-    AWAITING_ANIME_NAME = "awaiting_anime_name" # Waiting for admin to send anime name for add/edit
-    # --- Other steps will be added later ---
-    # SELECTING_SEARCH_RESULT = "selecting_search_result" # Admin needs to pick from search results
-    # AWAITING_POSTER = "awaiting_poster" # Waiting for admin to send poster image
-    # AWAITING_SYNOPSIS = "awaiting_synopsis"
-    # AWAITING_SEASONS_COUNT = "awaiting_seasons_count"
-    # SELECTING_GENRES = "selecting_genres" # Multi-step via callbacks
-    # AWAITING_RELEASE_YEAR = "awaiting_release_year"
-    # SELECTING_STATUS = "selecting_status"
-    # MANAGING_SEASONS_MENU = "managing_seasons_menu" # Displaying season options for an anime
-    # MANAGING_EPISODES_MENU = "managing_episodes_menu" # Displaying episode options for a season
-    # SELECTING_METADATA_QUALITY = "selecting_metadata_quality" # Adding file metadata
-    # SELECTING_METADATA_AUDIO = "selecting_metadata_audio"
-    # SELECTING_METADATA_SUBTITLES = "selecting_metadata_subtitles"
-    # UPLOADING_FILE = "uploading_file" # Waiting for file upload
-    # AWAITING_RELEASE_DATE = "awaiting_release_date"
+    AWAITING_ANIME_NAME = "awaiting_anime_name"
+    # SELECTING_SEARCH_RESULT = "selecting_search_result" # This is handled within AWAITING_ANIME_NAME processing now
+    AWAITING_POSTER = "awaiting_poster"
+    AWAITING_SYNOPSIS = "awaiting_synopsis"
+    AWAITING_SEASONS_COUNT = "awaiting_seasons_count"
+    SELECTING_GENRES = "selecting_genres"
+    AWAITING_RELEASE_YEAR = "awaiting_release_year"
+    SELECTING_STATUS = "selecting_status"
+    MANAGING_SEASONS_MENU = "managing_seasons_menu"
+    MANAGING_EPISODES_MENU = "managing_episodes_menu"
+    SELECTING_METADATA_QUALITY = "selecting_metadata_quality"
+    SELECTING_METADATA_AUDIO = "selecting_metadata_audio"
+    SELECTING_METADATA_SUBTITLES = "selecting_metadata_subtitles"
+    UPLOADING_FILE = "uploading_file"
+    AWAITING_RELEASE_DATE = "awaiting_release_date"
+    # EDITING_SYNOPSIS = "editing_synopsis" # Can reuse AWAITING_SYNOPSIS with state data context
+    # EDITING_POSTER = "editing_poster" # Can reuse AWAITING_POSTER with state data context
+
 
 # --- Entry Point for Content Management ---
 
@@ -218,144 +220,164 @@ async def handle_content_input(client: Client, message: Message, user_state: Use
     chat_id = message.chat.id
     input_text = message.text.strip()
 
-    # Ensure input isn't too long or weird?
-
     current_step = user_state.step
 
     content_logger.debug(f"Handling content input for user {user_id} at step: {current_step} with text: '{input_text[:50]}...'")
 
     if current_step == ContentState.AWAITING_ANIME_NAME:
-        anime_name_input = input_text
-
-        # --- Fuzzy Search for Existing Anime ---
-        anime_docs = list(await MongoDB.anime_collection().find().to_list(1000)) # Fetch some anime for search
-        anime_names = {doc['name']: str(doc['_id']) for doc in anime_docs} # Map name to ID
-
-        # Perform fuzzy matching
-        # process.extract(query, choices, limit) returns list of (match, score)
-        # limit should probably be higher than 1 if multiple close matches are possible
-        search_results = process.extract(anime_name_input, anime_names.keys(), limit=5) # Get top 5 matches
-
-        content_logger.info(f"Fuzzy search results for '{anime_name_input}': {search_results} for admin {user_id}")
-
-        matching_anime = []
-        # Filter results by confidence score threshold and gather details
-        for name, score in search_results:
-            if score >= config.FUZZYWUZZY_THRESHOLD:
-                 original_doc = next((doc for doc in anime_docs if doc['name'] == name), None) # Find original doc
-                 if original_doc:
-                      matching_anime.append({"_id": original_doc['_id'], "name": name, "score": score})
-
-        # --- Determine Next Step Based on Search Results and Purpose (Add/Edit) ---
-
-        purpose = user_state.data.get("purpose", "add") # Default to "add" purpose
-
-        if purpose == "add":
-             # Admin chose "Add New Anime", now sent a name.
-             # Even if matches found, default path is to ADD NEW, BUT offer option to select a match
-             if matching_anime:
-                 # Show found matches and offer to select one or add new
-                 response_text = ADD_ANIME_NAME_SEARCH_RESULTS.format(name=anime_name_input)
-                 buttons = []
-                 # Add buttons for existing matches
-                 for match in matching_anime:
-                     # Callback data needs to include anime_id and possibly action
-                     # Example: content_edit_existing|<anime_id>
-                     buttons.append([InlineKeyboardButton(f"✏️ Edit: {match['name']}", callback_data=f"content_edit_existing|{match['_id']}")])
-
-                 # Add option to proceed with adding NEW anime with the given name
-                 buttons.append([InlineKeyboardButton(BUTTON_ADD_AS_NEW_ANIME.format(name=anime_name_input), callback_data=f"content_proceed_add_new|{anime_name_input}")]) # Pass name
-
-                 buttons.append([InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")]) # Add cancel button
-                 reply_markup = InlineKeyboardMarkup(buttons)
-
-                 # Keep the state as AWAITING_ANIME_NAME, but now expecting callback selection
-                 # Could create a new state 'SELECTING_SEARCH_RESULT' if the logic gets complicated
-                 # For now, AWAITING_ANIME_NAME covers "initial name input" & "selection after search"
-
-                 try:
-                     await message.reply_text(
-                         response_text,
-                         reply_markup=reply_markup,
-                         parse_mode=config.PARSE_MODE
-                     )
-                 except Exception as e:
-                     content_logger.error(f"Failed to send anime search results (add flow) for admin {user_id}: {e}")
-                     await message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
-
-                 # No state change needed, waiting for callback
-
-
-             else:
-                  # No significant matches found OR admin wants to add fresh.
-                  # Proceed with adding new anime. Next step is awaiting poster.
-                  # Call a helper function for the rest of the ADD NEW ANIME flow.
-                  await set_user_state(user_id, "content_management", ContentState.AWAITING_POSTER, data={"new_anime_name": anime_name_input})
-                  await prompt_for_poster(client, chat_id, anime_name_input)
-
-
-        elif purpose == "edit":
-            # Admin chose "Edit Existing Anime", now sent a name.
-            # Must select an EXISTING anime. If no strong match, inform admin.
-            if matching_anime:
-                # Show found matches to select for editing
-                response_text = f"🔍 Found these anime matching '{anime_name_input}'. Select one to **__edit__**: 👇"
-                buttons = []
-                for match in matching_anime:
-                    # Callback data for editing needs the anime_id
-                    buttons.append([InlineKeyboardButton(f"✏️ Edit: {match['name']}", callback_data=f"content_edit_existing|{match['_id']}")])
-
-                buttons.append([InlineKeyboardButton(BUTTON_BACK, callback_data="content_edit_anime")]) # Go back to prompting name for edit
-                buttons.append([InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")])
-                reply_markup = InlineKeyboardMarkup(buttons)
-
-                # Keep state as AWAITING_ANIME_NAME with purpose: edit, waiting for selection callback
-                try:
-                    await message.reply_text(
-                         response_text,
-                         reply_markup=reply_markup,
-                         parse_mode=config.PARSE_MODE
-                    )
-                except Exception as e:
-                     content_logger.error(f"Failed to send anime search results (edit flow) for admin {user_id}: {e}")
-                     await message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
-
-            else:
-                 # No strong matches found for editing
-                 await message.reply_text(f"😔 Couldn't find any anime matching '{anime_name_input}' with confidence above {config.FUZZYWUZZY_THRESHOLD} for editing.", parse_mode=config.PARSE_MODE)
-                 # Maybe reset state or prompt again? Let's prompt again with cancel option.
-                 prompt_text = ADD_ANIME_NAME_PROMPT.format() # Use the same prompt again
-                 reply_markup = InlineKeyboardMarkup([
-                     [InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")]
-                 ])
-                 try:
-                    await message.reply_text(
-                        "🤔 Please try a different name to search for an anime to edit, or cancel.",
-                        reply_markup=reply_markup,
-                        parse_mode=config.PARSE_MODE
-                    )
-                    # State remains content_management:AWAITING_ANIME_NAME with purpose: edit
-                 except Exception as e:
-                     content_logger.error(f"Failed to resend prompt after no edit match for admin {user_id}: {e}")
-                     await message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
-
-
+         await handle_awaiting_anime_name_input(client, message, user_state)
+    elif current_step == ContentState.AWAITING_SYNOPSIS:
+         await handle_awaiting_synopsis_input(client, message, user_state, input_text) # Pass input_text
+    elif current_step == ContentState.AWAITING_SEASONS_COUNT:
+         await handle_awaiting_seasons_count_input(client, message, user_state, input_text) # Pass input_text
+    elif current_step == ContentState.AWAITING_RELEASE_YEAR:
+         await handle_awaiting_release_year_input(client, message, user_state, input_text) # Pass input_text
+    # Add routing for other text input states if needed (like search within lists)
+    # State SELECTING_GENRES/STATUS use callbacks primarily, but might need text fallback
+    
     else:
-        # Input received in AWAITING_ANIME_NAME state but purpose is somehow invalid/missing
-        content_logger.warning(f"Admin {user_id} sent anime name input in AWAITING_ANIME_NAME state but purpose is {purpose}.")
-        await message.reply_text("🤷 Unexpected input or state purpose. Please use the menu buttons to start an action.", parse_mode=config.PARSE_MODE)
-        await clear_user_state(user_id) # Clear state to prevent getting stuck
+        # Received unexpected text input for the current state
+        common_logger.warning(f"Admin {user_id} sent unexpected text input while in content management state {user_state.step}: {input_text[:50]}")
+        await message.reply_text("🤔 That wasn't the input I was expecting for this step. Please send the requested information, or type '❌ Cancel'.", parse_mode=config.PARSE_MODE)
+        # Stay in the current state, just re-prompt or ask for valid input    
+
+# --- Helper Functions for Specific Steps in Add New Anime Flow ---
+
+async def handle_awaiting_anime_name_input(client: Client, message: Message, user_state: UserState):
+    """Handles admin text input when in the AWAITING_ANIME_NAME state."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    input_text = message.text.strip() # The anime name provided by the admin
+
+    anime_name_input = input_text
 
 
-    # --- Add placeholder routing for other steps here later ---
-    # elif current_step == ContentState.AWAITING_POSTER:
-    #     # Handle received photo (if message.photo exists)
-    #     # Save photo file_id in state.data
-    #     # await set_user_state(user_id, "content_management", ContentState.AWAITING_SYNOPSIS, data={...})
-    #     # await prompt_for_synopsis(client, chat_id)
-    #     pass # Placeholder
+    # --- Fuzzy Search for Existing Anime (Existing Logic - Extracted) ---
+    anime_docs = list(await MongoDB.anime_collection().find().to_list(1000)) # Fetch some anime for search
+    anime_names = {doc['name']: str(doc['_id']) for doc in anime_docs} # Map name to ID
+    search_results = process.extract(anime_name_input, anime_names.keys(), limit=config.LEADERBOARD_COUNT) # Use config for limit? or separate limit? Use 5 for search
+    # Use config.FUZZYWUZZY_THRESHOLD
+
+    matching_anime = []
+    for name, score in search_results:
+        if score >= config.FUZZYWUZZY_THRESHOLD:
+             original_doc = next((doc for doc in anime_docs if doc['name'] == name), None)
+             if original_doc:
+                  matching_anime.append({"_id": original_doc['_id'], "name": name, "score": score})
+                 
+    # --- Determine Next Step Based on Search Results and Purpose (Add/Edit) ---
+    purpose = user_state.data.get("purpose", "add")
+
+    if purpose == "add":
+         if matching_anime:
+             response_text = ADD_ANIME_NAME_SEARCH_RESULTS.format(name=anime_name_input)
+             buttons = []
+             for match in matching_anime:
+                 buttons.append([InlineKeyboardButton(f"✏️ Edit: {match['name']}", callback_data=f"content_edit_existing|{match['_id']}")])
+
+             buttons.append([InlineKeyboardButton(BUTTON_ADD_AS_NEW_ANIME.format(name=anime_name_input), callback_data=f"content_proceed_add_new|{anime_name_input}")])
+
+             buttons.append([InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")])
+             reply_markup = InlineKeyboardMarkup(buttons)
+             try:
+                 await message.reply_text(response_text, reply_markup=reply_markup, parse_mode=config.PARSE_MODE)
+             except Exception as e:
+                 content_logger.error(f"Failed to send anime search results (add flow) for admin {user_id}: {e}")
+                 await message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+             # Stay in state, waiting for callback
+         else:
+              # No matches, proceed to add new flow. Set state to awaiting poster.
+              await set_user_state(user_id, "content_management", ContentState.AWAITING_POSTER, data={"new_anime_name": anime_name_input})
+              await prompt_for_poster(client, chat_id, anime_name_input)
+
+    elif purpose == "edit":
+        if matching_anime:
+            response_text = f"🔍 Found these anime matching '{anime_name_input}'. Select one to **__edit__**: 👇"
+            buttons = []
+            for match in matching_anime:
+                buttons.append([InlineKeyboardButton(f"✏️ Edit: {match['name']}", callback_data=f"content_edit_existing|{match['_id']}")])
+
+            buttons.append([InlineKeyboardButton(BUTTON_BACK, callback_data="content_edit_anime")]) # Go back to prompting name for edit
+            buttons.append([InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")])
+            reply_markup = InlineKeyboardMarkup(buttons)
+            try:
+                 await message.reply_text(response_text, reply_markup=reply_markup, parse_mode=config.PARSE_MODE)
+            except Exception as e:
+                 content_logger.error(f"Failed to send anime search results (edit flow) for admin {user_id}: {e}")
+                 await message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+            # Stay in state, waiting for callback
+        else:
+             await message.reply_text(f"😔 Couldn't find any anime matching '{anime_name_input}' with confidence above {config.FUZZYWUZZY_THRESHOLD} for editing.\nPlease try a different name to search, or type '❌ Cancel'.", parse_mode=config.PARSE_MODE)
+             # State remains AWAITING_ANIME_NAME with purpose: edit
 
 
+    else: # Should not happen if state data is handled correctly
+         content_logger.warning(f"Admin {user_id} in AWAITING_ANIME_NAME state with invalid purpose: {purpose}")
+         await message.reply_text("🤷 Invalid state data. Please try again.", parse_mode=config.PARSE_MODE)
+         await manage_content_command(client, message) # Send main menu
+
+# Helper function to display the management menu for a specific anime (Expanded Placeholder)
+async def display_anime_management_menu(client: Client, message: Message, anime: Anime):
+     """Displays the management menu for a specific anime."""
+     user_id = message.from_user.id
+     # We are in state content_management:MANAGING_SEASONS_MENU with anime_id in data
+     # Ensure state is set before calling this or called *from* where state is set
+     # current_state = await get_user_state(user_id) # Optional check if this helper could be called from different states
+
+
+     menu_text = f"🛠️ __**Managing**__ **__{anime.name}__** ({anime.release_year}, {anime.status}) 🛠️\n"
+     if anime.synopsis:
+         menu_text += f"📚 __**Synopsis**__: <blockquote>{anime.synopsis[:200]}...</blockquote>\n" # Show snippet
+     if anime.poster_file_id:
+         menu_text += "🖼️ Poster set.\n"
+     menu_text += f"🌟 Seasons Declared: {anime.total_seasons_declared}\n" # Show current declared seasons
+     menu_text += f"\n👇 Select an option to edit or manage seasons:"
+
+
+     buttons = [
+         # Manage Seasons button will show list of seasons/option to add
+         [InlineKeyboardButton("📺 Manage Seasons/Episodes", callback_data=f"content_manage_seasons|{anime.id}")],
+         # Individual edit options for anime metadata
+         [
+            InlineKeyboardButton("✏️ Edit Name", callback_data=f"content_edit_name|{anime.id}"),
+            InlineKeyboardButton("📝 Edit Synopsis", callback_data=f"content_edit_synopsis|{anime.id}")
+         ],
+         [
+            InlineKeyboardButton("🖼️ Edit Poster", callback_data=f"content_edit_poster|{anime.id}"),
+            InlineKeyboardButton("🏷️ Edit Genres", callback_data=f"content_edit_genres|{anime.id}")
+         ],
+         [
+            InlineKeyboardButton("🗓️ Edit Release Year", callback_data=f"content_edit_year|{anime.id}"),
+            InlineKeyboardButton("🚦 Edit Status", callback_data=f"content_edit_status|{anime.id}")
+         ],
+         [InlineKeyboardButton("🔄 Re-prompt Season Count", callback_data=f"content_edit_seasons_count|{anime.id}")], # Option to change declared seasons
+         [InlineKeyboardButton(BUTTON_BACK, callback_data="content_view_all")], # Go back to full admin list of anime
+         [InlineKeyboardButton(BUTTON_HOME, callback_data="menu_home")], # Go back to main bot menu
+     ]
+     reply_markup = InlineKeyboardMarkup(buttons)
+
+     try:
+         # Always edit the current message when navigating sub-menus for cleaner UI
+         await message.edit_text(
+              menu_text,
+              reply_markup=reply_markup,
+              parse_mode=config.PARSE_MODE,
+              disable_web_page_preview=True
+         )
+     except Exception as e:
+         content_logger.error(f"Failed to display anime management menu for anime {anime.id}: {e}")
+         # If edit fails, send as new message with error
+         await client.send_message(
+             chat_id=message.chat.id,
+             text="💔 Error displaying management menu. Sending it as a new message.",
+             reply_markup=reply_markup,
+             parse_mode=config.PARSE_MODE,
+             disable_web_page_preview=True
+         )
+         await client.send_message(message.chat.id, ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+
+
+# --- Handling Input for Adding New Anime Steps (after Name) ---
 # Helper to prompt admin for poster
 async def prompt_for_poster(client: Client, chat_id: int, anime_name: str):
     """Sends the prompt to the admin to upload a poster image."""
@@ -372,6 +394,491 @@ async def prompt_for_poster(client: Client, chat_id: int, anime_name: str):
          )
     except Exception as e:
         content_logger.error(f"Failed to send poster prompt to chat {chat_id}: {e}")
+
+async def handle_awaiting_poster(client: Client, message: Message, user_state: UserState):
+    """Handles admin input when in the AWAITING_POSTER state (expects photo)."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    if message.photo:
+         file_id = message.photo[-1].file_id # Get the highest quality version file_id
+         anime_name = user_state.data.get("new_anime_name")
+         content_logger.info(f"Admin {user_id} provided poster photo for '{anime_name}'")
+
+         # Update state data with the poster_file_id
+         user_state.data["poster_file_id"] = file_id
+
+         # Move to the next step: AWAITING_SYNOPSIS
+         await set_user_state(user_id, "content_management", ContentState.AWAITING_SYNOPSIS, data=user_state.data)
+
+         # Prompt for synopsis
+         await prompt_for_synopsis(client, chat_id, anime_name)
+
+         # Optional: Reply to the photo message to confirm receipt and state change
+         try:
+             await message.reply_text(
+                  "🖼️ Poster received! Now send the **__Synopsis__** for this anime.",
+                  parse_mode=config.PARSE_MODE
+              )
+         except Exception as e:
+              content_logger.warning(f"Failed to reply after poster input for admin {user_id}: {e}")
+
+
+    else:
+        # Received non-photo input when expecting a poster
+        await message.reply_text("👆 Please send a **photo** to use as the anime poster, or type '❌ Cancel'.", parse_mode=config.PARSE_MODE)
+        # State remains AWAITING_POSTER, user needs to try again
+
+
+async def prompt_for_synopsis(client: Client, chat_id: int, anime_name: str):
+    """Sends the prompt to the admin to provide the synopsis."""
+    prompt_text = ADD_ANIME_SYNOPSIS_PROMPT.format(anime_name=anime_name)
+    reply_markup = InlineKeyboardMarkup([
+         [InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")]
+    ])
+    try:
+        await client.send_message(
+             chat_id=chat_id,
+             text=prompt_text,
+             reply_markup=reply_markup,
+             parse_mode=config.PARSE_MODE
+         )
+    except Exception as e:
+        content_logger.error(f"Failed to send synopsis prompt to chat {chat_id}: {e}")
+
+async def handle_awaiting_synopsis_input(client: Client, message: Message, user_state: UserState, synopsis_text: str):
+    """Handles admin text input when in the AWAITING_SYNOPSIS state."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    anime_name = user_state.data.get("new_anime_name")
+    content_logger.info(f"Admin {user_id} provided synopsis for '{anime_name}': {synopsis_text[:50]}...")
+
+    # Validate synopsis length?
+
+    # Update state data with the synopsis
+    user_state.data["synopsis"] = synopsis_text
+
+    # Move to the next step: AWAITING_SEASONS_COUNT
+    await set_user_state(user_id, "content_management", ContentState.AWAITING_SEASONS_COUNT, data=user_state.data)
+
+    # Prompt for seasons count
+    await prompt_for_seasons_count(client, chat_id, anime_name)
+
+    # Optional confirmation reply
+    try:
+        await message.reply_text("📝 Synopsis received. Now send the **__Total Number of Seasons__**.", parse_mode=config.PARSE_MODE)
+    except Exception as e:
+        content_logger.warning(f"Failed to reply after synopsis input for admin {user_id}: {e}")
+
+async def prompt_for_seasons_count(client: Client, chat_id: int, anime_name: str):
+    """Sends the prompt to the admin to provide the total seasons count."""
+    prompt_text = ADD_ANIME_SEASONS_PROMPT.format(anime_name=anime_name)
+    reply_markup = InlineKeyboardMarkup([
+         [InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")]
+    ])
+    try:
+        await client.send_message(
+             chat_id=chat_id,
+             text=prompt_text,
+             reply_markup=reply_markup,
+             parse_mode=config.PARSE_MODE
+         )
+    except Exception as e:
+        content_logger.error(f"Failed to send seasons count prompt to chat {chat_id}: {e}")
+
+
+async def handle_awaiting_seasons_count_input(client: Client, message: Message, user_state: UserState, count_text: str):
+    """Handles admin text input when in the AWAITING_SEASONS_COUNT state (expects a number)."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    anime_name = user_state.data.get("new_anime_name")
+    content_logger.info(f"Admin {user_id} provided seasons count for '{anime_name}': {count_text}")
+
+    # Validate if the input is a number and non-negative
+    try:
+        seasons_count = int(count_text)
+        if seasons_count < 0:
+            raise ValueError("Negative count not allowed")
+
+        # Store seasons count in state data
+        user_state.data["total_seasons_declared"] = seasons_count
+
+        # Move to the next step: SELECTING_GENRES
+        await set_user_state(user_id, "content_management", ContentState.SELECTING_GENRES, data=user_state.data)
+
+        # Prompt for genres selection (Callback-based step)
+        await prompt_for_genres(client, chat_id, anime_name, user_state.data.get("selected_genres", [])) # Pass potentially existing selection
+
+        # Optional confirmation reply
+        try:
+             await message.reply_text(f"📺 Total seasons ({seasons_count}) received. Now select the **__Genres__**.", parse_mode=config.PARSE_MODE)
+        except Exception as e:
+             content_logger.warning(f"Failed to reply after seasons count input for admin {user_id}: {e}")
+
+    except ValueError:
+        # Input was not a valid non-negative integer
+        await message.reply_text("🚫 Please send a valid **__number__** for the total seasons count, or type '❌ Cancel'.", parse_mode=config.PARSE_MODE)
+        # State remains AWAITING_SEASONS_COUNT, user needs to try again
+
+async def prompt_for_genres(client: Client, chat_id: int, anime_name: str, selected_genres: List[str]):
+    """Sends the prompt and buttons for admin to select genres."""
+    prompt_text = ADD_ANIME_GENRES_PROMPT.format(anime_name=anime_name)
+    genres = config.INITIAL_GENRES # Use the preset genres from config
+    # Could also fetch genres from DB if you want to allow adding new ones over time?
+
+    # Create genre buttons with multi-select state indicated
+    buttons = []
+    for genre in genres:
+        # Use ✅ or ❌ to indicate if the genre is selected in the current state data
+        is_selected = genre in selected_genres
+        button_text = f"✅ {genre}" if is_selected else genre
+        # Callback data format: content_toggle_genre|<genre_name>
+        buttons.append(InlineKeyboardButton(button_text, callback_data=f"content_toggle_genre|{genre}"))
+
+    # Arrange buttons into rows
+    keyboard_rows = [buttons[i:i + config.MAX_BUTTONS_PER_ROW] for i in range(0, len(buttons), config.MAX_BUTTONS_PER_ROW)]
+
+    # Add Done and Cancel buttons
+    keyboard_rows.append([
+        InlineKeyboardButton(BUTTON_METADATA_DONE_SELECTING.format(metadata_type="Genres"), callback_data="content_genres_done"),
+        InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")
+    ])
+    reply_markup = InlineKeyboardMarkup(keyboard_rows)
+
+    try:
+        # Since this is triggered after AWAITING_SEASONS_COUNT input, it should be a new message
+        await client.send_message(
+             chat_id=chat_id,
+             text=prompt_text,
+             reply_markup=reply_markup,
+             parse_mode=config.PARSE_MODE,
+             disable_web_page_preview=True
+         )
+    except Exception as e:
+        content_logger.error(f"Failed to send genres prompt to chat {chat_id}: {e}")
+
+# Handler for genre selection callback buttons
+@Client.on_callback_query(filters.regex("^content_toggle_genre\|.*") & filters.private)
+async def content_toggle_genre_callback(client: Client, callback_query: CallbackQuery):
+    """Handles admin toggling genre selection via buttons."""
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+    data = callback_query.data # Format: content_toggle_genre|<genre_name>
+
+    # --- Admin Check ---
+    if user_id not in config.ADMIN_IDS:
+        await callback_query.answer("🚫 You are not authorized.", show_alert=True)
+        return
+
+    await callback_query.answer() # Acknowledge immediately
+
+    user_state = await get_user_state(user_id)
+
+    # Check if user is in the correct state and has required data
+    if user_state is None or user_state.handler != "content_management" or user_state.step != ContentState.SELECTING_GENRES:
+        content_logger.warning(f"Admin {user_id} clicked genre toggle callback but state is {user_state}.")
+        await callback_query.message.reply_text("🔄 Invalid state or action. Please restart the process.", parse_mode=config.PARSE_MODE)
+        await clear_user_state(user_id) # Clear incorrect state
+        return
+
+    try:
+        parts = data.split(config.CALLBACK_DATA_SEPARATOR)
+        if len(parts) != 2:
+             raise ValueError("Invalid callback data format for toggling genre.")
+        genre_to_toggle = parts[1]
+
+        # Get currently selected genres from state data, initialize if not present
+        selected_genres = user_state.data.get("selected_genres", [])
+
+        # Toggle the genre
+        if genre_to_toggle in selected_genres:
+            selected_genres.remove(genre_to_toggle)
+        else:
+             selected_genres.append(genre_to_toggle)
+
+        # Update the selected genres in state data
+        user_state.data["selected_genres"] = selected_genres
+        # We need to save the state update back to DB *before* editing the message/keyboard
+        # Or set the state *with* the updated data including selected genres.
+        await set_user_state(user_id, "content_management", ContentState.SELECTING_GENRES, data=user_state.data)
+
+        # Re-send/Edit the genre selection message with updated button states
+        # We need to recreate the keyboard with the new selection status
+        genres = config.INITIAL_GENRES # Get presets again
+        buttons = []
+        for genre in genres:
+            is_selected = genre in selected_genres
+            button_text = f"✅ {genre}" if is_selected else genre
+            buttons.append(InlineKeyboardButton(button_text, callback_data=f"content_toggle_genre|{genre}"))
+
+        keyboard_rows = [buttons[i:i + config.MAX_BUTTONS_PER_ROW] for i in range(0, len(buttons), config.MAX_BUTTONS_PER_ROW)]
+        keyboard_rows.append([
+             InlineKeyboardButton(BUTTON_METADATA_DONE_SELECTING.format(metadata_type="Genres"), callback_data="content_genres_done"),
+             InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")
+        ])
+        reply_markup = InlineKeyboardMarkup(keyboard_rows)
+
+        # Edit the message to reflect the new selection
+        # This needs to be done carefully as multiple clicks might cause flooding errors
+        # Simple try/except FloodWait can help.
+        try:
+             await callback_query.message.edit_reply_markup(reply_markup) # Edit *only* the keyboard
+        except MessageNotModified:
+            pass # Ignore if the user clicked the exact same button again
+        except FloodWait as e:
+            content_logger.warning(f"FloodWait while editing genre buttons for admin {user_id}: {e.value}")
+            await asyncio.sleep(e.value)
+            try: await callback_query.message.edit_reply_markup(reply_markup) # Retry
+            except Exception: pass # Ignore if retry fails
+
+
+    except Exception as e:
+         content_logger.error(f"Error handling content_toggle_genre callback for admin {user_id}: {e}")
+         await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+
+# Handler for the "Done Selecting Genres" button
+@Client.on_callback_query(filters.regex("^content_genres_done$") & filters.private)
+async def content_genres_done_callback(client: Client, callback_query: CallbackQuery):
+    """Handles admin clicking Done after selecting genres."""
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+
+    # --- Admin Check ---
+    if user_id not in config.ADMIN_IDS:
+        await callback_query.answer("🚫 You are not authorized.", show_alert=True)
+        return
+
+    await callback_query.answer("Genres selected.") # Acknowledge
+
+    user_state = await get_user_state(user_id)
+
+    # Check state
+    if user_state is None or user_state.handler != "content_management" or user_state.step != ContentState.SELECTING_GENRES:
+        content_logger.warning(f"Admin {user_id} clicked Done Genres but state is {user_state}.")
+        await callback_query.message.reply_text("🔄 Invalid state or action. Please restart the process.", parse_mode=config.PARSE_MODE)
+        await clear_user_state(user_id) # Clear incorrect state
+        return
+
+    selected_genres = user_state.data.get("selected_genres", [])
+    anime_name = user_state.data.get("new_anime_name", "Anime Name Unknown") # Fallback
+
+    content_logger.info(f"Admin {user_id} finished selecting genres for '{anime_name}': {selected_genres}")
+
+    # Move to the next step: AWAITING_RELEASE_YEAR
+    await set_user_state(user_id, "content_management", ContentState.AWAITING_RELEASE_YEAR, data=user_state.data)
+
+    # Prompt for release year
+    await prompt_for_release_year(client, chat_id, anime_name)
+
+    # Edit the message to confirm completion of genres and prompt next step
+    try:
+        await callback_query.message.edit_text(
+            f"🏷️ Genres saved: {', '.join(selected_genres) if selected_genres else 'None'}.\n\n🗓️ Now send the **__Release Year__**.",
+            parse_mode=config.PARSE_MODE
+        )
+    except Exception as e:
+         content_logger.warning(f"Failed to edit message after genres done for admin {user_id}: {e}")
+         await client.send_message(chat_id, "✅ Genres saved. Please send the **__Release Year__**.", parse_mode=config.PARSE_MODE) # Send new message
+
+
+async def prompt_for_release_year(client: Client, chat_id: int, anime_name: str):
+    """Sends the prompt to the admin to provide the release year."""
+    prompt_text = ADD_ANIME_YEAR_PROMPT.format(anime_name=anime_name)
+    reply_markup = InlineKeyboardMarkup([
+         [InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")]
+    ])
+    try:
+        await client.send_message(
+             chat_id=chat_id,
+             text=prompt_text,
+             reply_markup=reply_markup,
+             parse_mode=config.PARSE_MODE
+         )
+    except Exception as e:
+        content_logger.error(f"Failed to send release year prompt to chat {chat_id}: {e}")
+
+async def handle_awaiting_release_year_input(client: Client, message: Message, user_state: UserState, year_text: str):
+    """Handles admin text input when in the AWAITING_RELEASE_YEAR state (expects a number)."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    anime_name = user_state.data.get("new_anime_name")
+    content_logger.info(f"Admin {user_id} provided release year for '{anime_name}': {year_text}")
+
+    # Validate if the input is a valid year (e.g., a 4-digit number, maybe within a reasonable range)
+    try:
+        release_year = int(year_text)
+        if not (1900 <= release_year <= datetime.now().year + 5): # Simple range check
+            raise ValueError("Invalid year range")
+
+        # Store release year in state data
+        user_state.data["release_year"] = release_year
+
+        # Move to the next step: SELECTING_STATUS
+        await set_user_state(user_id, "content_management", ContentState.SELECTING_STATUS, data=user_state.data)
+
+        # Prompt for status selection (Callback-based step)
+        await prompt_for_status(client, chat_id, anime_name)
+
+        # Optional confirmation reply
+        try:
+             await message.reply_text(f"🗓️ Release year ({release_year}) saved. Now select the **__Status__**.", parse_mode=config.PARSE_MODE)
+        except Exception as e:
+             content_logger.warning(f"Failed to reply after release year input for admin {user_id}: {e}")
+
+
+    except ValueError:
+        # Input was not a valid year
+        await message.reply_text("🚫 Please send a valid **__year__** (e.g., 2024), or type '❌ Cancel'.", parse_mode=config.PARSE_MODE)
+        # State remains AWAITING_RELEASE_YEAR
+
+
+async def prompt_for_status(client: Client, chat_id: int, anime_name: str):
+    """Sends the prompt and buttons for admin to select status."""
+    prompt_text = ADD_ANIME_STATUS_PROMPT.format(anime_name=anime_name)
+    statuses = config.ANIME_STATUSES # Use presets
+
+    buttons = []
+    # Status is typically single-select, but button style can show selected one
+    # Or simply rely on callback to update message showing selected status
+    for status in statuses:
+         # Callback data: content_select_status|<status_name>
+         buttons.append(InlineKeyboardButton(status, callback_data=f"content_select_status|{status}"))
+
+    # Arrange buttons (potentially just one row if few statuses)
+    keyboard_rows = [buttons[i:i + config.MAX_BUTTONS_PER_ROW] for i in range(0, len(buttons), config.MAX_BUTTONS_PER_ROW)]
+    keyboard_rows.append([InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")])
+    reply_markup = InlineKeyboardMarkup(keyboard_rows)
+
+    try:
+        # Send as a new message
+        await client.send_message(
+             chat_id=chat_id,
+             text=prompt_text,
+             reply_markup=reply_markup,
+             parse_mode=config.PARSE_MODE,
+             disable_web_page_preview=True
+         )
+    except Exception as e:
+        content_logger.error(f"Failed to send status prompt to chat {chat_id}: {e}")
+
+
+# Handler for status selection callback buttons
+@Client.on_callback_query(filters.regex("^content_select_status\|.*") & filters.private)
+async def content_select_status_callback(client: Client, callback_query: CallbackQuery):
+    """Handles admin selecting anime status via buttons."""
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+    data = callback_query.data # Format: content_select_status|<status_name>
+
+    # --- Admin Check ---
+    if user_id not in config.ADMIN_IDS:
+        await callback_query.answer("🚫 You are not authorized.", show_alert=True)
+        return
+
+    await callback_query.answer() # Acknowledge
+
+    user_state = await get_user_state(user_id)
+
+    # Check state
+    if user_state is None or user_state.handler != "content_management" or user_state.step != ContentState.SELECTING_STATUS:
+        content_logger.warning(f"Admin {user_id} clicked status select callback but state is {user_state}.")
+        await callback_query.message.reply_text("🔄 Invalid state or action. Please restart the process.", parse_mode=config.PARSE_MODE)
+        await clear_user_state(user_id)
+        return
+
+    try:
+        parts = data.split(config.CALLBACK_DATA_SEPARATOR)
+        if len(parts) != 2:
+             raise ValueError("Invalid callback data format for selecting status.")
+        selected_status = parts[1]
+
+        # Validate if the selected status is one of the valid presets (safety)
+        if selected_status not in config.ANIME_STATUSES:
+             content_logger.warning(f"Admin {user_id} selected invalid status: {selected_status}")
+             await callback_query.message.reply_text("🚫 Invalid status selected. Please choose from the buttons.", parse_mode=config.PARSE_MODE)
+             # State remains the same, keep the menu
+             return # Stop processing this invalid selection
+
+
+        # Store the selected status in state data
+        user_state.data["status"] = selected_status
+
+        anime_name = user_state.data.get("new_anime_name", "Anime Name Unknown") # Fallback
+
+        content_logger.info(f"Admin {user_id} selected status '{selected_status}' for '{anime_name}'.")
+
+        # --- All New Anime Data Collected! Now Create the Anime Document! ---
+        # This is the end of the "Add New Anime" initial data collection flow.
+        # Collect all the data from user_state.data:
+        # - new_anime_name (key: "new_anime_name")
+        # - poster_file_id (key: "poster_file_id", Optional)
+        # - synopsis (key: "synopsis")
+        # - total_seasons_declared (key: "total_seasons_declared")
+        # - selected_genres (key: "selected_genres", defaults to [])
+        # - release_year (key: "release_year")
+        # - status (key: "status")
+
+        # Create the Anime Pydantic model instance
+        # Pydantic will handle defaults for lists and ints where not provided (though we collected essentials)
+        try:
+            # Construct dictionary from state data
+            new_anime_data = {
+                 "name": user_state.data.get("new_anime_name"),
+                 "poster_file_id": user_state.data.get("poster_file_id"), # Optional
+                 "synopsis": user_state.data.get("synopsis"),
+                 "total_seasons_declared": user_state.data.get("total_seasons_declared"),
+                 "genres": user_state.data.get("selected_genres", []), # Use default []
+                 "release_year": user_state.data.get("release_year"),
+                 "status": user_state.data.get("status"),
+                 "seasons": [], # Start with empty seasons array - manage later
+                 "overall_download_count": 0, # Default to 0
+                 "last_updated_at": datetime.now(timezone.utc) # Set initial update time
+            }
+
+            # Create the Pydantic model
+            new_anime = Anime(**new_anime_data)
+
+            # Insert into database
+            insert_result = await MongoDB.anime_collection().insert_one(new_anime.dict(by_alias=True, exclude_none=True))
+            new_anime_id = insert_result.inserted_id # Get the generated _id
+
+            # Update the created_at time in the model if needed (MongoDb sets it on _id usually)
+            # We'll rely on DB default for _id, Pydantic model's id maps to it.
+
+            content_logger.info(f"Successfully added new anime '{new_anime.name}' ({new_anime_id}) by admin {user_id}.")
+
+            # --- Transition to Managing the Newly Created Anime ---
+            # Clear the multi-step ADD state and set state to managing THIS anime
+            await set_user_state(user_id, "content_management", ContentState.MANAGING_SEASONS_MENU, data={"anime_id": str(new_anime_id), "anime_name": new_anime.name})
+
+            # Edit the message to confirm addition and show the anime management menu
+            await callback_query.message.edit_text(
+                 f"🎉 Anime **__{new_anime.name}__** added successfully! 🎉\n\nYou can now add seasons and episodes.\n\n👇 Select an option:",
+                 parse_mode=config.PARSE_MODE
+             )
+            # Now display the menu for this specific anime (will call display_anime_management_menu)
+            # Fetch the anime again or reuse the model instance
+            created_anime = await MongoDB.anime_collection().find_one({"_id": new_anime_id})
+            if created_anime:
+                 await display_anime_management_menu(client, callback_query.message, Anime(**created_anime))
+            else:
+                 content_logger.error(f"Failed to retrieve newly created anime {new_anime_id} after insertion for admin {user_id}.")
+                 # Fallback: Tell admin it was added, but menu couldn't load. Send main CM menu.
+                 await callback_query.message.reply_text("💔 Added anime successfully, but failed to load management menu. Returning to main content menu.", parse_mode=config.PARSE_MODE)
+                 await manage_content_command(client, callback_query.message)
+
+
+        except Exception as e:
+            content_logger.error(f"FATAL: Error creating or inserting new anime document after status selection for admin {user_id}: {e}")
+            # This is a critical error, all collected data is lost. Inform admin and clear state.
+            await callback_query.message.reply_text("💔 A critical error occurred while saving the new anime data. All collected details were lost. Please try again.", parse_mode=config.PARSE_MODE)
+            await clear_user_state(user_id)
+
+
+    except Exception as e:
+         content_logger.error(f"Error handling content_select_status callback for admin {user_id}: {e}")
+         await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+         # State is likely fine, let admin retry selecting
 
 
 # --- Callbacks After Initial Search ---
