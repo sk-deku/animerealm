@@ -7,6 +7,9 @@ from pyrogram import Client
 from pyrogram.errors import ApiIdInvalid, ApiIdPublishedFlood, AuthKeyUnregistered, PeerIdInvalid
 from pyrogram.enums import ParseMode
 
+from database.mongo_db import init_db
+from config import MONGO_URI # Ensure MONGO_URI is imported or passed correctly
+
 from dotenv import load_dotenv
 import os
 
@@ -66,8 +69,6 @@ except AuthKeyUnregistered:
 async def init_database():
     logging.info("Initializing database connection...")
     # Here we would import and call database connection and setup functions
-    from database.mongo_db import init_db
-    from config import MONGO_URI # Ensure MONGO_URI is imported or passed correctly
 
     if not MONGO_URI:
          logging.critical("MONGO_URI environment variable is not set! Cannot connect to database.")
