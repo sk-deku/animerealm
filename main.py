@@ -141,52 +141,35 @@ async def start_health_server(port: int):
 # --- Main Bot Start and Task Management ---
 async def main():
     main_logger.info("Starting bot main process...")
-
-    # Initialize database connection and structure before starting Pyrogram
+    main_logger.info(">>> Calling init_database...")
     await init_database()
+    main_logger.info("<<< init_database finished.") # Does this appear in logs?
 
-    # Define the port for the health check server (Koyeb expects 8080 by default)
     HEALTH_CHECK_PORT = 8080
-    # Optionally, load the port from environment variables if needed:
-    # HEALTH_CHECK_PORT = int(os.getenv("PORT", 8080))
 
-    # Create asyncio tasks for the Pyrogram bot and the health check server
+    main_logger.info(f">>> Starting bot.start() task...")
     bot_task = asyncio.create_task(bot.start())
+    main_logger.info(">>> Starting health server task...")
     health_task = asyncio.create_task(start_health_server(HEALTH_CHECK_PORT))
+    main_logger.info("Tasks created. Awaiting bot task completion of initial startup...")
 
+    await bot_task # Wait here until Pyrogram reports initial connection complete
+    main_logger.info("<<< Bot.start() finished initial startup.") # Does this appear?
+    main_logger.info("Bot is now running and listening for updates, health server task should be live.")
+    main_logger.info(f">>> Health server expected at 0.0.0.0:{HEALTH_CHECK_PORT}/healthz") # Confirm expected port
 
-    main_logger.info("Pyrogram bot and Health check server tasks created. Running concurrently.")
+    # Log if the health task finished early (it shouldn't with site.start())
+    # Or just await the Future indefinitely.
+    main_logger.info(">>> Awaiting asyncio.Future() to keep loop running indefinitely.")
+    await asyncio.Future()
 
-    # Report bot startup to the log channel (if configured) AFTER the bot is started and connected
-    # The health check will pass once start_health_server is listening.
-    # Log channel message should happen after bot.start() succeeds.
-    # Wait briefly for bot to connect after bot.start() completes the startup phase.
-
-    # Need to handle waiting for bot to be ready for sending messages after bot.start().
-    # client.start() connects and starts polling. Is_connected property can check state.
-    await bot_task # Wait for the bot's startup phase to complete the initial connection process
-
-
-    main_logger.info("Pyrogram client reports started.")
-
-    # Check bot connection and send startup message if configured
-    if LOG_CHANNEL_ID and bot.is_connected:
-         try:
-             bot_user = await bot.get_me()
-             startup_message = f"🤖 AnimeRealm Bot v{config.__version__} started successfully!"
-             startup_message += f"\n👤 Bot Username: @{bot_user.username}"
-             startup_message += f"\n🌐 Health check running on port {HEALTH_CHECK_PORT}/healthz"
-             await client.send_message(LOG_CHANNEL_ID, startup_message)
-             main_logger.info(f"Sent startup message to log channel {LOG_CHANNEL_ID}")
-         except Exception as e: main_logger.error(f"Failed to send startup message to log channel {LOG_CHANNEL_ID}: {e}", exc_info=True);
-
-
-    # The main task should now keep running, keeping the event loop alive.
-    # asyncio.gather or just awaiting a Future indefinitely works.
-    # Await the health_task indefinitely is fine as well since its start() call keeps it running.
-    # Or simply let the asyncio event loop manage both tasks. Await an empty Future is simple.
-    main_logger.info("Bot is now running and listening for updates, health server is live.")
-    await asyncio.Future() # This will keep the main loop running until it's explicitly cancelled
+async def init_db(uri: str):
+    main_logger.info(">>> init_db: Calling MongoDB.connect...")
+    await MongoDB.connect(uri, DB_NAME)
+    main_logger.info("<<< init_db: MongoDB.connect successful.") # Does this appear?
+    main_logger.info(">>> init_db: Creating/Ensuring MongoDB indices...")
+    # ... index creation logic ...
+    main_logger.info("<<< init_db: MongoDB indices checked/created.") # Does this appear?
 
 # Entry point of the script
 if __name__ == "__main__":
