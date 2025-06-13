@@ -15,7 +15,7 @@ DB_NAME = "AnimeRealmDB" # The name of your MongoDB database
 
 # --- Telegram API Limits and Defaults ---
 # Maximum number of items per pagination page (e.g., anime list, episodes list)
-PAGE_SIZE = 15
+PAGE_SIZE = 10
 # Timeout for certain operations (e.g., waiting for admin input in manage_content)
 # INPUT_TIMEOUT_SECONDS = 120 # Example timeout, might be needed in specific handlers
 
@@ -124,3 +124,50 @@ DEFAULT_NOTIFICATION_SETTINGS = {
     "new_version": True,
     "release_date_updated": False # Maybe notify about date changes too?
 }
+
+
+# --- Admin Content Management Presets ---
+# Preset options for selecting file metadata via buttons
+# You can add/remove options here as needed.
+QUALITY_PRESETS = [
+    "1080p",
+    "720p",
+    "480p",
+    "360p",
+    "240p",
+    "144p", # For extremely low quality mobile streams
+    "Best Available", # Option if admin doesn't know or wants a placeholder
+    "Unknown"
+]
+
+AUDIO_LANGUAGES_PRESETS = [
+    "Tamil",
+    "English",
+    "Hindi",
+    "Malayalam",
+    "Japanese",
+    "Dual Audio (JP/EN)",
+    "German",
+    "Spanish",
+    "French",
+    "Italian",
+    "Portuguese (Brazil)",
+    "Hindi",
+    "Korean",
+    "Chinese",
+    "Original", # For languages not listed or unique
+    "None"
+]
+
+SUBTITLE_LANGUAGES_PRESETS = [
+    "Tamil",
+    "English",
+    "Japanese",
+    "Hindi",
+    "Malayalam",
+    "Dual Sub (JP/EN)",
+    "None" # Very important option for raw files
+]
+
+# Maximum number of buttons per row for these presets
+MAX_BUTTONS_PER_ROW = 4
