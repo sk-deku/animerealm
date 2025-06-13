@@ -138,42 +138,49 @@ BUTTON_NOTIFY_NEW_VERSION = "✨ New Quality/Version" # State will change
 NOTIFICATION_SETTINGS_SAVED = "🔔 Your notification settings have been saved!"
 
 # --- Token Handlers ---
-GEN_TOKEN_TITLE = "🪙 __**Earn Download Tokens**__ 🪙"
+GEN_TOKEN_TITLE = "🪙 __**Generate Token Link**__ 🪙"
 GEN_TOKEN_INSTRUCTIONS = """
-Want **FREE** downloads? Follow these steps! 👇
+👇 **__Generate your unique link to earn tokens!__** 👇
 
-1️⃣ Share the link below with your friends or on social media.
-2️⃣ When someone **new** starts the bot using *your* unique link, they'll go through a quick step.
-3️⃣ Once they're done, **you automatically get 1 Download Token**! ✨
+Click the button below 👇 titled "**✨ Go to Token Link ✨**".
 
-🏆 Each token = 1 file download! The more you share, the more you can download!
+It will take you through a quick process via a link shortener. Once completed, you'll be redirected back here, and **you will automatically receive 5 Download Token**!
 
-<a href="{redeem_link}">🔗 **Your Unique Token Link (Tap to copy!)** 🔗</a>
+Press the "🤔 Tutorial?" button for a tutorial.
+"""
 
-❗ **This link is unique to you and will expire after {expiry_hours} hour(s) or one successful use.**
-""" # Link is provided via HTML for clickable text
+BUTTON_GO_TO_TOKEN_LINK = "✨ Open Link ✨" # The button with the shortened URL
+BUTTON_HOW_TO_EARN_TOKENS = "🤔 Tutorial?" # Button leading to the tutorial
 
-BUTTON_HOW_TO_EARN_TOKENS = "🤔 Tutorial?" # Button leading to a tutorial message
-EARN_TOKENS_TUTORIAL_MESSAGE = """
+# If HOW_TO_EARN_TUTORIAL_LINK in config.py is None, use this text:
+EARN_TOKENS_TUTORIAL_MESSAGE_TEXT = """
 📄 **__How to Earn Tokens Tutorial__** 📄
 
-Step-by-step guide:
+Follow these steps:
 
 1.  Use the `/gen_token` command or button.
-2.  You will get a unique Telegram link (`t.me/...`).
-3.  Share **that link**! (You can share the message the bot sends, which includes the link).
-4.  When a *new user* clicks your link, they are directed to start the bot.
-5.  They might need to click 'Start' or a button if a shortener is involved.
-6.  After they complete the step and successfully land back in chat with AnimeRealm (often they just need to hit 'Start'), our bot recognizes your token.
-7.  **Boom! 💥 You automatically receive 1 Download Token!**
+2.  A message with a "**✨ Go to Token Link ✨**" button will appear.
+3.  Tap this button. You'll be taken to a website (a link shortener).
+4.  On that website, you'll complete a short step (like viewing an ad or completing a captcha). Follow the instructions on the website carefully.
+5.  After completing their step, the website will provide a final link that redirects you back to Telegram, opening **__AnimeRealm__** again.
+6.  When you're redirected back here via that link, our bot automatically verifies the token embedded in it.
+7.  **Boom! 💥 You automatically receive {tokens_earned} Download Token!**
 
-Share widely and enjoy your free anime! 🥰
-"""
-TOKEN_REDEEMED_SUCCESS = "🎉 Congratulations! Your token link was successfully redeemed, and you've earned **{tokens_earned}** token(s)! \n\n📊 You now have **{user_tokens}** tokens."
-TOKEN_REDEEMED_OWN = "Oops! You clicked your own token link. 😉 Share it with others to earn tokens!"
-TOKEN_ALREADY_REDEEMED = "😟 This token link has already been used."
-TOKEN_EXPIRED = "⏳ This token link has expired."
-TOKEN_INVALID = "🚫 Invalid token link."
+Generate and redeem links anytime you need more tokens for downloads!
+""" # Use {tokens_earned} dynamically
+
+# If HOW_TO_EARN_TUTORIAL_LINK is set in config.py, use this message and the button will open the link:
+EARN_TOKENS_TUTORIAL_MESSAGE_LINK_INTRO = """
+📄 **__Earn Tokens Tutorial__** 📄
+
+Watch this quick guide to understand the process of earning tokens:
+""" # The button to open the link will be added programmatically
+
+TOKEN_REDEEMED_SUCCESS = "🎉 Congratulations! Your token link was successfully redeemed, and you've earned **{tokens_earned}** token(s)! \n\n📊 Your new balance is **{user_tokens}** tokens. Happy downloading! 😊"
+TOKEN_REDEEMED_OWN = "🤔 You can only redeem your *own* generated links. That's how it works!" # Adjusted message
+TOKEN_ALREADY_REDEEMED = "😟 This token link has already been used by you or expired." # Adjusted message
+TOKEN_EXPIRED = "⏳ This token link has expired and cannot be used." # Slightly reworded
+TOKEN_INVALID = "🚫 Invalid token link provided."
 
 
 # --- Premium Handlers ---
