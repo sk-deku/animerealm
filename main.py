@@ -2,126 +2,234 @@
 import asyncio
 import logging
 import sys
-
+import os
 from pyrogram import Client
 from pyrogram.errors import ApiIdInvalid, ApiIdPublishedFlood, AuthKeyUnregistered, PeerIdInvalid
-from pyrogram.enums import ParseMode
-
-from database.mongo_db import init_db
-from config import MONGO_URI # Ensure MONGO_URI is imported or passed correctly
+from pyrogram.enums import ParseMode # Keep ParseMode import for Client init
 
 from dotenv import load_dotenv
-import os
 
-# Load environment variables from .env file
-load_dotenv()
-
-# Configure logging
+# Configure basic logging immediately
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s - %(levelname)s] - %(name)s - %(message)s",
     datefmt='%H:%M:%S',
     handlers=[
-        logging.FileHandler("bot.log"), # Log to file
-        logging.StreamHandler()         # Log to console
+        logging.StreamHandler(sys.stdout) # Always log to console
     ]
 )
-
-# Pyrogram often logs too much for lower levels, silence libraries
+# Set specific log levels for noisy libraries early
 logging.getLogger("pyrogram").setLevel(logging.WARNING)
 logging.getLogger("pymongo").setLevel(logging.WARNING)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
+logging.getLogger("motor").setLevel(logging.WARNING) # Add motor for async driver
 
+
+main_logger = logging.getLogger(__name__) # Logger for this file
+
+# Load environment variables from .env file as early as possible
+load_dotenv()
 
 # --- Configuration ---
-# These should ideally come from config.py or .env
-# For now, load directly from .env using os.getenv
+# Load critical configuration from environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
 MONGO_URI = os.getenv("MONGO_URI")
-ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(','))) if os.getenv("ADMIN_IDS") else []
-OWNER_ID = int(os.getenv("OWNER_ID")) if os.getenv("OWNER_ID") else None # Single owner ID
 
-# Optional config
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID")) if os.getenv("LOG_CHANNEL_ID") else None
-FILE_STORAGE_CHANNEL_ID = int(os.getenv("FILE_STORAGE_CHANNEL_ID")) if os.getenv("FILE_STORAGE_CHANNEL_ID") else None
+# Validate essential environment variables immediately
+if not BOT_TOKEN:
+    main_logger.critical("BOT_TOKEN environment variable not set!")
+    sys.exit(1)
+if not API_ID or not API_HASH:
+     main_logger.critical("API_ID and API_HASH environment variables are required for Pyrogram! Get them from https://my.telegram.org.")
+     sys.exit(1)
+if not MONGO_URI:
+    main_logger.critical("MONGO_URI environment variable not set! Database connection is required.")
+    sys.exit(1)
 
-# --- Bot Initialization ---
-# Pass storage = :memory: if you don't want session files on disk
-# Using the token bot API ensures it's a bot, not a user account
+
+# Admin IDs (comma separated)
+ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
+ADMIN_IDS = []
+if ADMIN_IDS_STR:
+    try:
+        ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS_STR.split(',') if admin_id.strip()]
+        if not ADMIN_IDS: raise ValueError("ADMIN_IDS is empty after parsing")
+    except ValueError as e:
+        main_logger.critical(f"Invalid format for ADMIN_IDS environment variable: {e}. Must be comma-separated integers.")
+        sys.exit(1)
+else:
+     main_logger.warning("ADMIN_IDS environment variable is not set. No admin users defined.")
+
+
+# Owner ID (single)
+OWNER_ID_STR = os.getenv("OWNER_ID")
+OWNER_ID = None
+if OWNER_ID_STR:
+    try:
+        OWNER_ID = int(OWNER_ID_STR.strip())
+    except ValueError as e:
+        main_logger.critical(f"Invalid format for OWNER_ID environment variable: {e}. Must be a single integer.")
+        sys.exit(1)
+    if OWNER_ID not in ADMIN_IDS:
+        main_logger.warning(f"OWNER_ID ({OWNER_ID}) is not included in ADMIN_IDS. OWNER_ID may not have full admin access depending on handler logic.")
+
+
+# Telegram Channel IDs for logs and file storage (Bot must be admin)
+# Handle potentially unset optional channel IDs gracefully, but check FILE_STORAGE_CHANNEL_ID
+LOG_CHANNEL_ID_STR = os.getenv("LOG_CHANNEL_ID")
+LOG_CHANNEL_ID = None
+if LOG_CHANNEL_ID_STR:
+    try:
+         LOG_CHANNEL_ID = int(LOG_CHANNEL_ID_STR.strip())
+         # Add File Handler with LOG_CHANNEL_ID after getting its value
+         try:
+              log_channel_handler = logging.FileHandler("bot.log")
+              log_channel_handler.setFormatter(logging.Formatter("[%(asctime)s - %(levelname)s] - %(name)s - %(message)s", datefmt='%H:%M:%S'))
+              logging.getLogger().addHandler(log_channel_handler) # Add handler to root logger
+              main_logger.info(f"Logging to bot.log file.")
+         except Exception as e:
+              main_logger.error(f"Failed to configure file logging: {e}")
+              # Continue without file logging
+    except ValueError as e:
+        main_logger.critical(f"Invalid format for LOG_CHANNEL_ID environment variable: {e}. Must be an integer.")
+        sys.exit(1)
+
+
+FILE_STORAGE_CHANNEL_ID_STR = os.getenv("FILE_STORAGE_CHANNEL_ID")
+FILE_STORAGE_CHANNEL_ID = None
+if FILE_STORAGE_CHANNEL_ID_STR:
+    try:
+         FILE_STORAGE_CHANNEL_ID = int(FILE_STORAGE_CHANNEL_ID_STR.strip())
+         main_logger.info(f"FILE_STORAGE_CHANNEL_ID is set to {FILE_STORAGE_CHANNEL_ID}.")
+    except ValueError as e:
+        main_logger.critical(f"Invalid format for FILE_STORAGE_CHANNEL_ID environment variable: {e}. Must be an integer.")
+        sys.exit(1)
+else:
+    main_logger.critical("FILE_STORAGE_CHANNEL_ID environment variable is NOT set. File handling features WILL NOT work correctly.")
+    sys.exit(1)
+
+# Other configuration variables are now imported in relevant files from config.py
+
+
+# --- Pyrogram Client Initialization ---
+main_logger.info("Initializing Pyrogram client...")
 try:
     bot = Client(
         name="anime_realm_bot", # Session name
-        api_id=os.getenv("API_ID"), # Get from .env
-        api_hash=os.getenv("API_HASH"), # Get from .env
+        api_id=int(API_ID), # Ensure API_ID is integer
+        api_hash=API_HASH,
         bot_token=BOT_TOKEN,
         plugins=dict(root="handlers"), # Load handlers from the 'handlers' directory
-        workdir="." # Pyrogram session files will be created here
+        workdir=".", # Pyrogram session files will be created here
+        # Enable the message/callback handling from both direct message and callback queries implicitly via handlers
+        # Configure ParseMode globally if possible, or apply in each handler
+        parse_mode=ParseMode.HTML # Set HTML ParseMode globally
     )
+    main_logger.info("Pyrogram client created.")
+
 except (ApiIdInvalid, ApiIdPublishedFlood):
-    logging.critical("Your API_ID/API_HASH are invalid or come from a public repository. Get valid API credentials from https://my.telegram.org.")
+    main_logger.critical("Your API_ID/API_HASH are invalid or come from a public repository. Get valid API credentials from https://my.telegram.org.")
     sys.exit(1)
 except AuthKeyUnregistered:
-     logging.critical("Your Pyrogram session key is invalid or has expired.")
+     main_logger.critical("Your Pyrogram session key is invalid or has expired. Delete the session file and try again.")
      sys.exit(1)
+except Exception as e:
+    main_logger.critical(f"An unexpected error occurred during Pyrogram client initialization: {e}", exc_info=True)
+    sys.exit(1)
+
 
 # --- Database Initialization ---
-# This function now calls the init_db from the database module
 async def init_database():
-    logging.info("Initializing database connection...")
-    # Here we would import and call database connection and setup functions
-
-    if not MONGO_URI:
-         logging.critical("MONGO_URI environment variable is not set! Cannot connect to database.")
-         # We might raise an error here that sys.exit in main handles
-         # For now, logging critical and continuing might be okay if other parts can run, but risky.
-         # Better to halt startup if DB is essential.
-         sys.exit(1) # Halt startup if database connection is critical
+    main_logger.info("Initializing database connection and structure...")
+    from database.mongo_db import init_db # Import the initialization function
 
     try:
-        await init_db(MONGO_URI) # Call the async function to connect and set up indices
+        # Pass MONGO_URI to the init_db function
+        await init_db(MONGO_URI)
+        main_logger.info("Database initialized successfully.")
     except Exception as e:
-         logging.critical(f"Database initialization failed: {e}")
-         sys.exit(1) # Halt startup if database initialization fails
+         main_logger.critical(f"Database initialization failed: {e}", exc_info=True)
+         # Since the bot cannot function without the database, exit critically
+         sys.exit(1)
 
-# --- Event Loop and Bot Start ---
+
+# --- Bot Start ---
 async def main():
-    logging.info("Starting bot...")
+    main_logger.info("Starting bot...")
 
-    # Initialize database connection and structure
+    # Initialize database connection and structure before starting the bot
     await init_database()
 
-    # Check essential config
-    if not BOT_TOKEN:
-        logging.critical("BOT_TOKEN environment variable not set!")
-        sys.exit(1)
-    if not MONGO_URI:
-        logging.critical("MONGO_URI environment variable not set!")
-        sys.exit(1)
-    # It's good to also check API_ID and API_HASH in .env
-    if not os.getenv("API_ID") or not os.getenv("API_HASH"):
-         logging.critical("API_ID and API_HASH environment variables are required for Pyrogram!")
+    # Ensure required channel IDs are accessible if necessary at startup
+    # For simplicity, we assume the env vars are correct integer IDs
+    # A more robust check would use client.get_chat() but that needs client to be started.
+    # We checked existence of env vars above.
+
+    main_logger.info("Connecting to Telegram servers and starting bot polling...")
+    try:
+        await bot.start()
+        main_logger.info("Bot has successfully connected to Telegram and started polling!")
+    except Exception as e:
+         main_logger.critical(f"Failed to connect to Telegram and start polling: {e}", exc_info=True)
+         # Maybe try to log this failure via Telegram if LOG_CHANNEL_ID is set and client somehow started?
          sys.exit(1)
-    # Log required channels for admin features if they aren't set
-    if not LOG_CHANNEL_ID:
-         logging.warning("LOG_CHANNEL_ID not set. Admin logs will only appear in console/file.")
-    if not FILE_STORAGE_CHANNEL_ID:
-        logging.critical("FILE_STORAGE_CHANNEL_ID not set. File handling will NOT work correctly.")
-        sys.exit(1)
 
-    logging.info("Connecting to Telegram servers...")
-    await bot.start()
-    logging.info("Bot has connected to Telegram!")
 
-    # Basic health check start logging
-    logging.info("Health check server is managed by Procfile on port 8080.")
-    # The http.server started by Procfile release will handle this.
-    # In a more complex setup, you might integrate a tiny web server here.
+    # Log that the bot is running and ready for updates
+    main_logger.info("Bot is now running and listening for updates.")
+
+    # Report bot startup to the log channel (if configured)
+    if LOG_CHANNEL_ID and bot.is_connected:
+         try:
+             # Send a startup message
+             startup_message = f"🤖 AnimeRealm Bot v{config.__version__} started successfully!"
+             # Fetch basic bot info like username
+             try:
+                 bot_user = await bot.get_me()
+                 startup_message += f"\n👤 Bot Username: @{bot_user.username}"
+             except Exception:
+                 main_logger.warning("Failed to fetch bot username on startup.")
+
+             # Send to the log channel
+             await bot.send_message(LOG_CHANNEL_ID, startup_message)
+             main_logger.info(f"Sent startup message to log channel {LOG_CHANNEL_ID}")
+         except Exception as e:
+             main_logger.error(f"Failed to send startup message to log channel {LOG_CHANNEL_ID}: {e}")
+             # Don't exit, continue running without log channel notification
+
+    # The health check server managed by Procfile release runs separately on port 8080.
+    # We only need to keep this asyncio event loop running for Pyrogram updates.
+    main_logger.info("Health check server is assumed running by Procfile on port 8080.")
 
 
     # Keep the bot running until terminated
-    logging.info("Bot is now running and listening for updates.")
-    await asyncio.Future() # Keeps the event loop running indefinitely
+    await asyncio.Future() # Keeps the event loop running indefinitely until cancelled
+
 
 if __name__ == "__main__":
-    # asyncio.run() is generally preferred for modern async apps
-    asyncio.run(main())
+    # Get config __version__ placeholder defined in config.py or handle it better
+    if not hasattr(config, '__version__'):
+        config.__version__ = "N/A" # Add a default version if not in config.py
+
+    # Clean up the workdir on some signals if needed (more complex)
+    # Or rely on Docker/Koyeb clean up.
+    # basic atexit or signal handling could be added here.
+
+    # Run the main async function
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+         main_logger.info("Bot stopped manually via KeyboardInterrupt.")
+         # You might want to close the MongoDB connection gracefully here
+         from database.mongo_db import MongoDB
+         asyncio.run(MongoDB.close())
+    except Exception as e:
+         main_logger.critical(f"Bot stopped due to unhandled exception in main loop: {e}", exc_info=True)
+         # Attempt to close DB connection even on unhandled error
+         from database.mongo_db import MongoDB
+         try:
+             asyncio.run(MongoDB.close())
+         except Exception as db_close_e:
+             main_logger.error(f"Failed to close DB connection during shutdown: {db_close_e}")
