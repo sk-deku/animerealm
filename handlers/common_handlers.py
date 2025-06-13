@@ -7,6 +7,7 @@ from typing import Union
 from pyrogram import Client, filters
 from pyrogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait, MessageIdInvalid, MessageNotModified
+from . import content_handler
 
 from strings import (
     WELCOME_MESSAGE, HELP_MESSAGE, ABOUT_BOT_MESSAGE, ERROR_OCCURRED,
@@ -443,7 +444,7 @@ async def handle_plain_text_input(client: Client, message: Message):
     common_logger.debug(f"Received plain text from user {user_id}: {text}")
 
 
-   # --- Check for cancellation request ---
+    # --- Check for cancellation request ---
     if text.lower() == CANCEL_ACTION.lower():
         user_state = await get_user_state(user_id)
         if user_state:
@@ -451,46 +452,37 @@ async def handle_plain_text_input(client: Client, message: Message):
             await message.reply_text(ACTION_CANCELLED, parse_mode=config.PARSE_MODE)
             common_logger.info(f"User {user_id} cancelled state {user_state.handler}:{user_state.step}")
         else:
-             # User sent "cancel" but wasn't in a state
              await message.reply_text("✅ Nothing to cancel.", parse_mode=config.PARSE_MODE)
         return # Always stop after handling cancel
 
+       # --- Retrieve User State ---
     user_state = await get_user_state(user_id)
 
-    # --- Route Input Based on State ---
+   # --- Route Input Based on State ---
     if user_state:
         common_logger.info(f"User {user_id} in state {user_state.handler}:{user_state.step}. Routing text input.")
-        # Route to the specific handler based on user_state.handler
-        # This routing logic will expand as you implement more handlers
+        
         if user_state.handler == "content_management":
-             # Example routing - needs implementation in content_handler.py
-             # from . import content_handler # Import content_handler here or at top
-             # await content_handler.handle_content_input(client, message, user_state)
-             await message.reply_text(f"You are currently adding content, state: {user_state.step}. (Handler not fully linked)", parse_mode=config.PARSE_MODE) # Placeholder
+             # Import content_handler dynamically or ensure imported at top
+             await content_handler.handle_content_input(client, message, user_state)
         elif user_state.handler == "request":
-            # Example routing - needs implementation in request_handler.py
-            # from . import request_handler
-            # await request_handler.handle_request_input(client, message, user_state)
              await message.reply_text(f"You are currently requesting anime, state: {user_state.step}. (Handler not fully linked)", parse_mode=config.PARSE_MODE) # Placeholder
-        # Add elif blocks for other handlers that expect text input
+        # Add elif blocks for other handlers that expect text input (e.g., search query *if* it needs a multi-step state, like complex filters)
         else:
-            # Fallback for unexpected state (state exists, but handler not recognized or implemented)
-            common_logger.warning(f"User {user_id} in state {user_state.handler}:{user_state.step} but handler is not recognized. Clearing state.")
+            # Fallback for unexpected state
+            common_logger.warning(f"User {user_id} in unrecognized state {user_state.handler}:{user_state.step}. Clearing state.")
             await clear_user_state(user_id)
             await message.reply_text("🤷 Unexpected state. Your process was cancelled.", parse_mode=config.PARSE_MODE)
-
 
     else:
         # --- No Active State - Treat as Search Query ---
         common_logger.info(f"User {user_id} has no active state. Treating as search query.")
-        # Check if it seems like a search query (e.g., min length > 1)
-        if len(text) > 1: # Simple check to avoid triggering search on single characters
-             # Route to the search handler
-             # from . import search_handler # Import search_handler here or at top
-             # await search_handler.handle_search_query_text(client, message, text) # Call the search logic
+        # Assuming any non-command text input is a search query if no active state
+        if len(text) > 1:
+             # Import search_handler dynamically or ensure imported at top
+             # await search_handler.handle_search_query_text(client, message, text)
              await message.reply_text(f"Assuming you want to search for '{text}'... (Search handler not fully integrated)", parse_mode=config.PARSE_MODE) # Placeholder
         else:
-            # Text too short or not clearly a search/command - maybe a general prompt
              await message.reply_text("Hmm, I can search for anime or use buttons to guide you. 😊", parse_mode=config.PARSE_MODE)
 
 
@@ -538,5 +530,73 @@ async def callback_error_handler(client: Client, callback_query: CallbackQuery):
         # If even answering fails, there's not much more we can do programmatically
 
 
-# Add an error handler for general unhandled exceptions in event loop? Pyrogram might handle some of this.
-# If you notice the bot crashing unexpectedly without hitting these handlers, you might need a broader catch.
+# Handler for Photo/Document/other file types when NOT in text input state.
+# This is needed for handling things like admin uploading a poster image or episode files.
+# This handler should check the user's state before proceeding.
+@Client.on_message((filters.photo | filters.document) & filters.private, group=1) # Process files, higher group than default
+async def handle_file_input(client: Client, message: Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    common_logger.debug(f"Received file input from user {user_id}")
+
+    user_state = await get_user_state(user_id)
+
+    if user_state and user_state.handler == "content_management":
+        # If admin is in content management and in a state expecting a file:
+        if user_state.step == ContentState.AWAITING_POSTER:
+             # Assuming we receive a photo for poster
+             if message.photo:
+                  # Process the photo - get the file_id etc.
+                  file_id = message.photo[-1].file_id # Get the highest quality version
+                  anime_name = user_state.data.get("new_anime_name")
+
+                  # --- Placeholder for AWAITING_POSTER processing ---
+                  await message.reply_text(f"Received poster image. File ID: `{file_id}`\n\nAnime Name: {anime_name}\n(Processing next step - Synopsis Prompt - not fully linked)", parse_mode=config.PARSE_MODE)
+
+                  # Example next step: Set state to AWAITING_SYNOPSIS and prompt
+                  # await set_user_state(user_id, "content_management", ContentState.AWAITING_SYNOPSIS, data={"new_anime_name": anime_name, "poster_file_id": file_id})
+                  # await content_handler.prompt_for_synopsis(client, chat_id, anime_name) # Need prompt function
+
+
+             else:
+                  # Admin sent a document or something else when expecting a photo poster
+                  await message.reply_text("👆 Please send a **photo** to use as the anime poster, or type '❌ Cancel'.", parse_mode=config.PARSE_MODE)
+                  # State remains AWAITING_POSTER
+        elif user_state.step == ContentState.UPLOADING_FILE:
+            # Admin is in the state of uploading an episode file (document or video)
+            if message.document or message.video: # Check for document or video (Pyrogram treats videos sometimes as docs?)
+                 # Process the file - get file_id, size, etc.
+                 file = message.document if message.document else message.video
+                 file_id = file.file_id
+                 file_unique_id = file.file_unique_id
+                 file_name = file.file_name or "Unnamed File"
+                 file_size_bytes = file.file_size
+
+                 # Need to route this to a specific content handler function that expects file upload
+                 # Example: content_handler.handle_episode_file_upload(client, message, user_state, file_details)
+                 await message.reply_text(f"Received file for episode. File ID: `{file_id}`\n\nProcessing next step - Metadata selection (not fully linked)", parse_mode=config.PARSE_MODE)
+
+                 # Example next step: Set state for metadata selection, store temp file data in state
+                 # user_state.data["temp_file"] = {"file_id": file_id, "file_size": file_size_bytes, ...}
+                 # await set_user_state(user_id, "content_management", ContentState.SELECTING_METADATA_QUALITY, data=user_state.data)
+                 # await content_handler.prompt_for_metadata_quality(client, chat_id) # Need prompt function
+
+            else:
+                # Admin sent text or other media when expecting episode file
+                await message.reply_text("⬆️ Please upload the episode file (video or document), or type '❌ Cancel'.", parse_mode=config.PARSE_MODE)
+                # State remains UPLOADING_FILE
+        else:
+            # Received a file, but in a content management state that doesn't expect a file right now
+             common_logger.warning(f"Admin {user_id} sent file input while in content management state {user_state.step}, which does not expect a file.")
+             await message.reply_text("🤷 I'm not expecting a file right now based on your current action.", parse_mode=config.PARSE_MODE)
+
+    else:
+        # User not in any active state, and sent a file. Ignore or provide a default response.
+        # Default is likely to just ignore it or say "Send /help"
+        common_logger.debug(f"Ignoring file input from user {user_id} not in active state.")
+        pass # Ignore
+
+
+# --- Uncomment handlers/__init__.py import ---
+# Edit handlers/__init__.py and uncomment:
+# from . import content_handler
