@@ -1,10 +1,17 @@
 # handlers/content_handler.py
+
 import logging
-from typing import Union
+import asyncio # Needed for FloodWait and delays
+from typing import Union, List, Dict, Any, Tuple # Added Tuple for return types
+from datetime import datetime, timezone # Import timezone aware datetime
 from pyrogram import Client, filters
-from pyrogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-import asyncio
-from datetime import datetime, timezone
+from pyrogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+    Document, Video, Photo # Import specific media types
+)
+from pyrogram.errors import FloodWait, MessageNotModified
+
+# Import config and strings - Ensure all necessary strings/configs are imported
 import config
 from strings import (
     MANAGE_CONTENT_TITLE, MANAGE_CONTENT_OPTIONS,
@@ -30,12 +37,15 @@ from strings import (
 
 )
 
+# Import database models and utilities
 from database.mongo_db import MongoDB, get_user_state, set_user_state, clear_user_state
 from database.models import UserState, Anime, Season, Episode, FileVersion, PyObjectId
-from handlers.common_handlers import get_user, create_main_menu_keyboard
 
-# Fuzzy search library
+# Import necessary helpers from common_handlers
+from handlers.common_handlers import get_user # For potential user checks
+from database.mongo_db import model_to_mongo_dict # To easily convert Pydantic to dict
 from fuzzywuzzy import process
+
 
 # Configure logger for content handlers
 content_logger = logging.getLogger(__name__)
@@ -761,12 +771,8 @@ async def content_manage_seasons_callback(client: Client, callback_query: Callba
          await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
          await clear_user_state(user_id)
 
-
-# Callback: content_add_new_season|<anime_id>|<next_season_number>
-
 @Client.on_callback_query(filters.regex("^content_add_new_season\|.*\|.*") & filters.private)
 async def content_add_new_season_callback(client: Client, callback_query: CallbackQuery):
-    """Handles admin clicking Add New Season button."""
     user_id = callback_query.from_user.id
     chat_id = callback_query.message.chat.id
     data = callback_query.data # content_add_new_season|<anime_id>|<season_number_to_add>
@@ -782,44 +788,37 @@ async def content_add_new_season_callback(client: Client, callback_query: Callba
 
     try:
         parts = data.split(config.CALLBACK_DATA_SEPARATOR)
-        if len(parts) != 3:
-             raise ValueError("Invalid callback data format for adding season.")
+        if len(parts) != 3: raise ValueError("Invalid callback data format for adding season.")
         anime_id_str = parts[1]
         season_to_add = int(parts[2])
 
-        # Check if a season with this number already exists? Best handled before button generation.
-        # For simple flow, we append to the array and assume button gives next available.
+        # Add the season to the database
+        new_season_dict = Season(season_number=season_to_add).dict() # Create season dict
 
-        # Create the new Season model
-        new_season = Season(season_number=season_to_add, episodes=[]) # Start with empty episodes
-
-        # Add the new season to the anime's seasons array in the database
-        # Use $push operator to append to the array
         update_result = await MongoDB.anime_collection().update_one(
             {"_id": ObjectId(anime_id_str)},
-            {"$push": {"seasons": new_season.dict()}} # Add the season document
-            # No $set:{last_updated_at} needed with $push, handles modification date? Check docs.
+            {"$push": {"seasons": new_season_dict}}
         )
 
         if update_result.modified_count > 0:
             content_logger.info(f"Admin {user_id} added Season {season_to_add} to anime {anime_id_str}.")
-            await callback_query.message.reply_text(f"✅ Added Season **__{season_to_add}__** to this anime!\n\n🔢 Now send the **__Total Number of Episodes__** for Season **__{season_to_add}__**.", parse_mode=config.PARSE_MODE)
+            # Edit the season list message to show the new season
+            await callback_query.message.edit_text(f"✅ Added Season **__{season_to_add}__** to this anime!", parse_mode=config.PARSE_MODE)
 
             # Transition to the state where we await the episode count for this new season
+            # NEW STATE: AWAITING_EPISODE_COUNT_FOR_SEASON
             await set_user_state(
                  user_id,
                  "content_management",
-                 ContentState.AWAITING_SEASONS_COUNT, # Reusing this state, need to add context for episode count for a specific season
+                 ContentState.AWAITING_SEASONS_COUNT, # Still using AWAITING_SEASONS_COUNT, but clarified its *purpose* in the input handler logic
                  data={**user_state.data, "managing_season_number": season_to_add, "purpose": "set_episode_count"}
             )
 
-            # Edit the season management menu message to remove the "Add New Season" option (as we just added it)
-            # or better, just send a new message for the input. Keep the menu there for navigation.
-            # Let's send a new prompt message.
-            prompt_text = ADD_SEASON_EPISODES_PROMPT.format(season_number=season_to_add, anime_name=user_state.data.get("anime_name", "Anime"))
-            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")]]) # Cancel only
+            # Send the prompt for episode count input
+            anime_name = user_state.data.get("anime_name", "Anime") # Get name from state
+            prompt_text = ADD_SEASON_EPISODES_PROMPT.format(season_number=season_to_add, anime_name=anime_name)
+            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")]])
             await client.send_message(chat_id, prompt_text, reply_markup=reply_markup, parse_mode=config.PARSE_MODE)
-
 
         else:
             content_logger.warning(f"Admin {user_id} clicked add season {season_to_add} for {anime_id_str} but modified_count was 0.")
@@ -827,140 +826,1226 @@ async def content_add_new_season_callback(client: Client, callback_query: Callba
             # Stay in the seasons list state
 
 
-    except ValueError:
-         await callback_query.message.reply_text("🚫 Invalid season number data in callback.", parse_mode=config.PARSE_MODE)
-         # State remains the same, could re-send menu
+    except ValueError: await callback_query.message.reply_text("🚫 Invalid season number data.", parse_mode=config.PARSE_MODE)
+    except Exception as e: content_logger.error(f"Error handling content_add_new_season callback {user_id}: {e}"); await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
 
-    except Exception as e:
-        content_logger.error(f"Error handling content_add_new_season callback for admin {user_id}: {e}")
-        await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
-
-
-# Update handle_content_input to handle AWAITING_SEASONS_COUNT input for episode count for a season
+# Updated handle_awaiting_seasons_count_input - focuses only on 'set_episode_count' purpose now
 async def handle_awaiting_seasons_count_input(client: Client, message: Message, user_state: UserState, count_text: str):
-    """Handles admin text input when in the AWAITING_SEASONS_COUNT state."""
     user_id = message.from_user.id
     chat_id = message.chat.id
-    anime_name = user_state.data.get("anime_name", "Anime") # Get anime name from state data
-    purpose = user_state.data.get("purpose", "initial_total") # Check purpose
+    # Anime name should be in state data now
+    anime_name = user_state.data.get("anime_name", "Anime")
+    purpose = user_state.data.get("purpose") # MUST have a purpose here
 
-    content_logger.info(f"Admin {user_id} provided count input: {count_text} for '{anime_name}' with purpose '{purpose}'.")
+    if purpose == "set_episode_count":
+         # This input is for setting the episode count for a specific season number
+         anime_id_str = user_state.data.get("anime_id")
+         season_number = user_state.data.get("managing_season_number")
+
+         if not anime_id_str or season_number is None:
+              content_logger.error(f"Admin {user_id} sent episode count but missing anime/season ID in state data. State: {user_state.data}")
+              await message.reply_text("💔 Error: State data missing for episode count. Process cancelled.", parse_mode=config.PARSE_MODE)
+              await clear_user_state(user_id); return
+
+         content_logger.info(f"Admin {user_id} provided episode count input for {anime_name} Season {season_number}.")
+
+         try:
+             count_value = int(count_text)
+             if count_value < 0: raise ValueError("Negative count not allowed")
+
+             # Create episode documents (starting from EP01)
+             episode_docs_to_add = []
+             for i in range(1, count_value + 1):
+                 episode_docs_to_add.append(Episode(episode_number=i).dict()) # Create Pydantic then dict
+
+
+             # Update the seasons array: Find the correct season element and SET its 'episodes' field and declared count
+             update_result = await MongoDB.anime_collection().update_one(
+                 {"_id": ObjectId(anime_id_str), "seasons.season_number": season_number},
+                 {
+                     "$set": {
+                         "seasons.$.episode_count_declared": count_value,
+                         "seasons.$.episodes": episode_docs_to_add,
+                         "last_updated_at": datetime.now(timezone.utc) # Update top-level modified date
+                         }
+                 }
+             )
+
+             if update_result.modified_count > 0:
+                 content_logger.info(f"Admin {user_id} set episode count {count_value} for anime {anime_id_str} Season {season_number}.")
+                 await message.reply_text(EPISODES_CREATED_SUCCESS.format(episode_count=count_value, season_number=season_number), parse_mode=config.PARSE_MODE)
+
+                 # After setting episode count, transition back to the seasons list menu for this anime
+                 # Preserve anime_id and anime_name in state data, remove managing_season_number and purpose
+                 updated_state_data = {k: v for k, v in user_state.data.items() if k not in ["managing_season_number", "purpose"]}
+                 await set_user_state(user_id, "content_management", ContentState.MANAGING_SEASONS_LIST, data=updated_state_data)
+
+                 # Redisplay the seasons menu
+                 # Re-fetch anime and seasons to ensure menu is updated
+                 updated_anime_doc = await MongoDB.anime_collection().find_one({"_id": ObjectId(anime_id_str)}, {"seasons": 1, "name": 1})
+                 if updated_anime_doc:
+                      # Mocking callback query is tricky. Easier to implement display_seasons_management_menu directly
+                      await display_seasons_management_menu(client, message, updated_anime_doc) # New helper needed
+                 else:
+                      content_logger.error(f"Failed to fetch anime {anime_id_str} after setting episode count for admin {user_id}.")
+                      await message.reply_text("💔 Set episode count, but failed to reload season menu.", parse_mode=config.PARSE_MODE)
+
+
+             else:
+                 content_logger.warning(f"Admin {user_id} set episode count {count_value} for {anime_id_str} S{season_number} but modified_count was 0. Same count entered?")
+                 await message.reply_text("⚠️ Episode count update modified 0 documents. Same count entered? No changes made.", parse_mode=config.PARSE_MODE)
+                 # State is still AWAITING_SEASONS_COUNT with purpose, user can send count again or cancel
+
+
+         except ValueError:
+             await message.reply_text("🚫 Please send a valid **__number__** for the total number of episodes, or type '❌ Cancel'.", parse_mode=config.PARSE_MODE)
+             # State remains the same
+
+
+    else:
+        # This state (AWAITING_SEASONS_COUNT) received text without 'set_episode_count' purpose
+        # This should only be for the initial ADD NEW flow, which we are removing from here.
+        # Log this as an unexpected input if this handler is reached in a context other than setting episode count.
+        content_logger.warning(f"Admin {user_id} sent text input to AWAITING_SEASONS_COUNT state with unexpected purpose: {purpose}.")
+        await message.reply_text("🤔 Unexpected input for this step. Please provide the episode count.", parse_mode=config.PARSE_MODE)
+        # State remains the same
+
+# --- Helper to display the updated Seasons Management List ---
+async def display_seasons_management_menu(client: Client, message: Message, anime_doc_with_seasons: Dict):
+     """Displays the list of seasons for an anime, expects a document with 'seasons' and 'name' projected."""
+     user_id = message.from_user.id
+     chat_id = message.chat.id
+
+     anime_id_str = str(anime_doc_with_seasons["_id"]) # Assume _id is in the doc
+     anime_name = anime_doc_with_seasons.get("name", "Anime Name Unknown")
+     seasons = anime_doc_with_seasons.get("seasons", [])
+     seasons.sort(key=lambda s: s.get("season_number", 0)) # Ensure sorting
+
+
+     menu_text = f"📺 __**Manage Seasons for**__ **__{anime_name}__** 🛠️\n\n"
+     if not seasons:
+          menu_text += "No seasons added yet.\n\n"
+     else:
+         menu_text += "👇 Select a season to manage episodes or use options below:\n\n"
+
+     buttons = []
+     for season in seasons:
+         season_number = season.get("season_number")
+         ep_count = season.get("episode_count_declared", 0)
+         button_label = f"📺 Season {season_number}"
+         if ep_count > 0:
+              button_label += f" ({ep_count} Episodes)" # Show declared count if > 0
+
+         if season_number is not None:
+             buttons.append([InlineKeyboardButton(button_label, callback_data=f"content_select_season|{anime_id_str}|{season_number}")])
+
+     # Add options: Add New Season, Remove Season
+     next_season_number = (seasons[-1].get("season_number", 0) if seasons else 0) + 1
+     buttons.append([InlineKeyboardButton(BUTTON_ADD_NEW_SEASON, callback_data=f"content_add_new_season|{anime_id_str}|{next_season_number}")])
+     if seasons: # Only show remove option if there are seasons
+          buttons.append([InlineKeyboardButton("🗑️ Remove a Season", callback_data=f"content_remove_season_select|{anime_id_str}")])
+
+
+     # Back buttons
+     buttons.append([InlineKeyboardButton(BUTTON_BACK_TO_ANIME_LIST, callback_data=f"content_edit_existing|{anime_id_str}")]) # Go back to editing THIS anime
+     buttons.append([InlineKeyboardButton(BUTTON_HOME, callback_data="menu_home")])
+
+
+     reply_markup = InlineKeyboardMarkup(buttons)
+
+     try:
+         # We are typically called from a place that requires editing a message (e.g. after adding season)
+         # But could also be called when returning from episode list
+         await message.edit_text(
+              menu_text,
+              reply_markup=reply_markup,
+              parse_mode=config.PARSE_MODE,
+              disable_web_page_preview=True
+         )
+     except Exception as e:
+          content_logger.error(f"Failed to display seasons management menu (helper) for anime {anime_id_str} by admin {user_id}: {e}")
+          await client.send_message(chat_id, "💔 Error displaying seasons menu.", parse_mode=config.PARSE_MODE)
+
+@Client.on_callback_query(filters.regex("^content_manage_seasons\|.*") & filters.private)
+async def content_manage_seasons_callback(client: Client, callback_query: CallbackQuery):
+    # ... (Admin check, state check, answer callback) ...
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+    data = callback_query.data # content_manage_seasons|<anime_id>
+
+    if user_id not in config.ADMIN_IDS: await callback_query.answer("🚫 You are not authorized.", show_alert=True); return
+    await callback_query.answer("Loading seasons...")
+
+    user_state = await get_user_state(user_id)
+    # Should be in some content management state when here
+    if not (user_state and user_state.handler == "content_management"): # Relax state check slightly
+        await callback_query.message.reply_text("🔄 Invalid state. Please navigate from the main content menu.", parse_mode=config.PARSE_MODE)
+        await clear_user_state(user_id); return
+    # Update state to specifically MANAGING_SEASONS_LIST now that we are definitely showing it
+    await set_user_state(user_id, "content_management", ContentState.MANAGING_SEASONS_LIST, data={**user_state.data, "anime_id": data.split(config.CALLBACK_DATA_SEPARATOR)[1]}) # Ensure anime_id in state
+
 
     try:
-        count_value = int(count_text)
-        if count_value < 0:
-             raise ValueError("Negative count not allowed")
+        anime_id_str = data.split(config.CALLBACK_DATA_SEPARATOR)[1]
 
-        if purpose == "initial_total":
-            # This is for setting the *total seasons declared* during ADD NEW ANIME flow (Original logic)
-            # This should remain in content_select_status_callback handling after prompt_for_release_year
-            # Wait, my state diagram is confusing. Let's adjust.
+        # Fetch anime details (seasons array)
+        anime_doc = await MongoDB.anime_collection().find_one(
+             {"_id": ObjectId(anime_id_str)},
+             {"seasons": 1, "name": 1}
+         )
+        if not anime_doc:
+            content_logger.error(f"Admin {user_id} managing seasons for non-existent anime ID: {anime_id_str}")
+            await callback_query.message.edit_text("💔 Error: Anime not found for season management.", parse_mode=config.PARSE_MODE)
+            await clear_user_state(user_id); return
 
-            # Correct State Flow:
-            # ADD NEW ANIME: AWAITING_ANIME_NAME -> AWAITING_POSTER -> AWAITING_SYNOPSIS -> AWAITING_SEASONS_COUNT (TOTAL SEASONS INPUT) -> SELECTING_GENRES -> AWAITING_RELEASE_YEAR -> SELECTING_STATUS -> (Save Anime) -> MANAGING_ANIME_MENU
+        # Display the seasons menu using the helper function
+        await display_seasons_management_menu(client, callback_query.message, anime_doc)
 
-            # ADD EPISODES FOR A SEASON: MANAGING_SEASONS_LIST -> content_add_new_season callback -> AWAITING_EPISODE_COUNT_FOR_SEASON (New State!) -> (Handle Input, Add Episodes to DB Array) -> MANAGING_SEASONS_LIST
-
-            # Let's rename AWAITING_SEASONS_COUNT to clarify and create a new state
-
-            raise NotImplementedError("Redefining state flow.") # Temporarily disable old logic
-            # The old logic for handling total seasons count during initial add should now be handled by a state specific to *that* step
-            # This state should primarily be for SETTING EPISODE COUNT for a specific season
-
-
-        elif purpose == "set_episode_count":
-             # This input is for setting the episode count for a specific season number
-             anime_id_str = user_state.data.get("anime_id")
-             season_number = user_state.data.get("managing_season_number")
-
-             if not anime_id_str or season_number is None:
-                  content_logger.error(f"Admin {user_id} sent episode count in 'set_episode_count' state but missing anime/season ID. State: {user_state.data}")
-                  await message.reply_text("💔 Error: State data missing for episode count input. Process cancelled.", parse_mode=config.PARSE_MODE)
-                  await clear_user_state(user_id)
-                  return
-
-             content_logger.info(f"Admin {user_id} provided episode count ({count_value}) for {anime_name} Season {season_number}.")
-
-             # Find the specific season array element and add episode documents to it
-             # Need to use $set to update a nested array element and potentially create subdocuments.
-             # Or use $push for each episode? $push is better for arrays.
-             # We need to ensure the season exists before adding episodes.
-             # Let's find the anime, then find the season by number.
-
-             try:
-                  anime_doc = await MongoDB.anime_collection().find_one(
-                       {"_id": ObjectId(anime_id_str), "seasons.season_number": season_number}, # Filter for the anime and check season exists
-                       {"seasons.$": 1} # Project only the matching season for verification if needed (less useful for updates)
-                  )
-
-                  if not anime_doc:
-                       content_logger.error(f"Admin {user_id} sent episode count for non-existent anime/season {anime_id_str}/S{season_number}")
-                       await message.reply_text("💔 Error: Anime or season not found. Cannot add episodes.", parse_mode=config.PARSEMode)
-                       await clear_user_state(user_id); return
+    except Exception as e:
+         content_logger.error(f"Error handling content_manage_seasons callback for admin {user_id}: {e}")
+         await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+         await clear_user_state(user_id)
 
 
-                  # Create episode documents (starting from EP01)
-                  episode_docs_to_add = []
-                  for i in range(1, count_value + 1):
-                       episode_docs_to_add.append(Episode(episode_number=i).dict()) # Create Episode Pydantic model then convert to dict
+# --- Implement Remove Season Workflow (Needs a sub-menu/state) ---
+# Callback: content_remove_season_select|<anime_id>
+
+@Client.on_callback_query(filters.regex("^content_remove_season_select\|.*") & filters.private)
+async def content_remove_season_select_callback(client: Client, callback_query: CallbackQuery):
+    """Handles admin clicking to remove a season, displays seasons to select."""
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+    data = callback_query.data # content_remove_season_select|<anime_id>
+
+    if user_id not in config.ADMIN_IDS: await callback_query.answer("🚫 You are not authorized.", show_alert=True); return
+    await callback_query.answer("Select season to remove...")
+
+    user_state = await get_user_state(user_id)
+    # State should be MANAGING_SEASONS_LIST
+    if not (user_state and user_state.handler == "content_management" and user_state.step == ContentState.MANAGING_SEASONS_LIST):
+         await callback_query.message.reply_text("🔄 Invalid state for removing season.", parse_mode=config.PARSE_MODE)
+         await clear_user_state(user_id); return
+
+    try:
+        anime_id_str = data.split(config.CALLBACK_DATA_SEPARATOR)[1]
+
+        # Fetch anime seasons
+        anime_doc = await MongoDB.anime_collection().find_one(
+             {"_id": ObjectId(anime_id_str)},
+             {"seasons": 1, "name": 1}
+         )
+        if not anime_doc:
+            content_logger.error(f"Admin {user_id} removing season for non-existent anime ID: {anime_id_str}")
+            await callback_query.message.edit_text("💔 Error: Anime not found for season removal.", parse_mode=config.PARSE_MODE)
+            await clear_user_state(user_id); return
+
+        anime_name = anime_doc.get("name", "Anime Name Unknown")
+        seasons = anime_doc.get("seasons", [])
+        seasons.sort(key=lambda s: s.get("season_number", 0))
+
+        if not seasons:
+            await callback_query.message.edit_text("🤔 No seasons to remove.", parse_mode=config.PARSE_MODE)
+            # Stay in MANAGING_SEASONS_LIST, keep displaying the current seasons menu (which has no remove button now)
+            return
+
+        # --- Transition to Selecting Season to Remove State ---
+        # Not strictly a new state needed if the response uses callbacks, but clarifies intent.
+        # Let's set state to MANAGING_SEASONS_LIST but change message.
+
+        menu_text = f"🗑️ __**Remove Season from**__ **__{anime_name}__** 🗑️\n\n👇 Select the season you want to **__permanently remove__**: (This will delete all episodes/files in that season!)\n\n"
+
+        buttons = []
+        for season in seasons:
+             season_number = season.get("season_number")
+             if season_number is not None:
+                 # Callback: content_confirm_remove_season|<anime_id>|<season_number>
+                 buttons.append([InlineKeyboardButton(f"❌ Remove Season {season_number}", callback_data=f"content_confirm_remove_season|{anime_id_str}|{season_number}")])
+
+        # Add Back button to season list
+        buttons.append([InlineKeyboardButton(BUTTON_BACK, callback_data=f"content_manage_seasons|{anime_id_str}")])
+        buttons.append([InlineKeyboardButton(BUTTON_HOME, callback_data="content_management_main_menu")])
+        reply_markup = InlineKeyboardMarkup(buttons)
+
+        await callback_query.message.edit_text(
+             menu_text,
+             reply_markup=reply_markup,
+             parse_mode=config.PARSE_MODE
+        )
 
 
-                  # Update the seasons array: Find the correct season element and SET its 'episodes' field
-                  # Using $set with positional operator $.
-                  update_result = await MongoDB.anime_collection().update_one(
-                      {"_id": ObjectId(anime_id_str), "seasons.season_number": season_number},
-                      {
-                           "$set": {"seasons.$.episode_count_declared": count_value, "seasons.$.episodes": episode_docs_to_add},
-                           "$set": {"last_updated_at": datetime.now(timezone.utc)} # Update top-level modified date
-                      }
-                      # NOTE: $set can overwrite. If admin specifies episode count again,
-                      # this will DELETE existing episode entries for this season.
-                      # Is this the desired behavior? If not, need $push + manual indexing/checking
-                      # based on whether episode exists. Simpler for now is overwrite.
-                  )
+    except Exception as e:
+         content_logger.error(f"Error handling content_remove_season_select callback for admin {user_id}: {e}")
+         await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+         await clear_user_state(user_id)
 
 
-                  if update_result.modified_count > 0:
-                      content_logger.info(f"Admin {user_id} set episode count {count_value} for anime {anime_id_str} Season {season_number}. Created episode placeholders.")
-                      await message.reply_text(EPISODES_CREATED_SUCCESS.format(episode_count=count_value, season_number=season_number), parse_mode=config.PARSE_MODE)
+# Callback: content_confirm_remove_season|<anime_id>|<season_number>
 
-                      # After setting episode count, transition back to the seasons list menu for this anime
-                      await set_user_state(user_id, "content_management", ContentState.MANAGING_SEASONS_LIST, data={"anime_id": anime_id_str, "anime_name": user_state.data.get("anime_name", "Anime")})
+@Client.on_callback_query(filters.regex("^content_confirm_remove_season\|.*\|.*") & filters.private)
+async def content_confirm_remove_season_callback(client: Client, callback_query: CallbackQuery):
+    """Handles admin confirming removing a season."""
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+    data = callback_query.data # content_confirm_remove_season|<anime_id>|<season_number>
 
-                      # Redisplay the seasons menu (might need to fetch updated anime doc?)
-                      updated_anime_doc = await MongoDB.anime_collection().find_one(
-                           {"_id": ObjectId(anime_id_str)}, {"seasons": 1, "name": 1}
-                      )
-                      if updated_anime_doc:
-                          updated_anime_doc["seasons"].sort(key=lambda s: s.get("season_number", 0)) # Sort
-                          # Need to re-build the seasons management menu display logic here or call a helper
-                          # display_seasons_management_menu(client, message, updated_anime_doc)
-                          # For simplicity, let's re-call the original season display handler which will fetch and display:
-                          await content_manage_seasons_callback(client, callback_query=type('obj', (object,), {'from_user': type('obj', (object,), {'id': user_id}), 'message': message, 'data': f'content_manage_seasons|{anime_id_str}', 'answer': lambda text='', show_alert=False: asyncio.Future()})()) # Mocking callback query
+    if user_id not in config.ADMIN_IDS: await callback_query.answer("🚫 You are not authorized.", show_alert=True); return
+    await callback_query.answer("Removing season...")
 
-                      else:
-                          content_logger.error(f"Failed to fetch anime {anime_id_str} after setting episode count for admin {user_id}.")
-                          await message.reply_text("💔 Set episode count, but failed to reload season menu.", parse_mode=config.PARSE_MODE)
+    user_state = await get_user_state(user_id)
+    # State should be MANAGING_SEASONS_LIST (implicitly via the selection menu)
+    if not (user_state and user_state.handler == "content_management" and user_state.step == ContentState.MANAGING_SEASONS_LIST):
+         await callback_query.message.reply_text("🔄 Invalid state for confirming season removal.", parse_mode=config.PARSE_MODE)
+         await clear_user_state(user_id); return
 
+    try:
+        parts = data.split(config.CALLBACK_DATA_SEPARATOR)
+        if len(parts) != 3:
+             raise ValueError("Invalid callback data format for removing season.")
+        anime_id_str = parts[1]
+        season_number_to_remove = int(parts[2])
 
-                  else:
-                      content_logger.warning(f"Admin {user_id} set episode count {count_value} for anime {anime_id_str} Season {season_number} but modified_count was 0.")
-                      await message.reply_text("⚠️ Episode count update modified 0 documents. Season might not exist or same count entered?", parse_mode=config.PARSE_MODE)
-                      # Stay in the 'set_episode_count' state, admin might try again
-                      # Or reset state? Reset seems safer.
-                      await clear_user_state(user_id)
+        # Use $pull operator to remove an element from the seasons array based on its number
+        update_result = await MongoDB.anime_collection().update_one(
+            {"_id": ObjectId(anime_id_str)},
+            {"$pull": {"seasons": {"season_number": season_number_to_remove}}}
+            # Update last_updated_at? Or use write concern to ensure sync?
+        )
 
+        if update_result.modified_count > 0:
+            content_logger.info(f"Admin {user_id} removed Season {season_number_to_remove} from anime {anime_id_str}.")
+            await callback_query.message.edit_text(f"✅ Permanently removed Season **__{season_number_to_remove}__** from this anime.", parse_mode=config.PARSE_MODE)
 
-             except Exception as e:
-                 content_logger.error(f"Error setting episode count for anime {anime_id_str} Season {season_number} by admin {user_id}: {e}")
-                 await message.reply_text("💔 Error saving episode count.", parse_mode=config.PARSE_MODE)
-                 await clear_user_state(user_id)
+            # Return to the updated seasons list menu
+            # Re-fetch anime seasons
+            updated_anime_doc = await MongoDB.anime_collection().find_one(
+                 {"_id": ObjectId(anime_id_str)},
+                 {"seasons": 1, "name": 1}
+             )
+            if updated_anime_doc:
+                 await display_seasons_management_menu(client, callback_query.message, updated_anime_doc)
+            else:
+                 content_logger.error(f"Failed to fetch anime {anime_id_str} after season removal for admin {user_id}. Cannot display menu.")
+                 await callback_query.message.reply_text("💔 Removed season, but failed to reload season menu.", parse_mode=config.PARSE_MODE)
+
+        else:
+             content_logger.warning(f"Admin {user_id} clicked remove season {season_number_to_remove} for {anime_id_str} but modified_count was 0. Already removed?")
+             await callback_query.message.edit_text(f"⚠️ Season **__{season_number_to_remove}__** was not found or already removed.", parse_mode=config.PARSE_MODE)
+             # Stay in the seasons removal selection state or go back? Let's go back to the season list menu.
+             updated_anime_doc = await MongoDB.anime_collection().find_one(
+                  {"_id": ObjectId(anime_id_str)},
+                  {"seasons": 1, "name": 1}
+              )
+             if updated_anime_doc:
+                  await display_seasons_management_menu(client, callback_query.message, updated_anime_doc)
+             else:
+                   content_logger.error(f"Failed to fetch anime {anime_id_str} after failed season removal attempt for admin {user_id}.")
+                   await callback_query.message.reply_text("💔 Season not found. Failed to reload season menu.", parse_mode=config.PARSE_MODE)
 
 
     except ValueError:
-        # Input was not a valid non-negative integer
-        await message.reply_text("🚫 Please send a valid **__number__** for the total number of episodes, or type '❌ Cancel'.", parse_mode=config.PARSE_MODE)
-        # State remains the same
+        await callback_query.message.reply_text("🚫 Invalid season number data in callback.", parse_mode=config.PARSE_MODE)
+        # Stay in selection state? No, refresh list.
+        # Need to refetch anime and display season removal selection menu again
+
+    except Exception as e:
+        content_logger.error(f"Error handling content_confirm_remove_season callback for admin {user_id}: {e}")
+        await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+        await clear_user_state(user_id)
+
+@Client.on_callback_query(filters.regex("^content_remove_episode\|.*\|.*\|.*") & filters.private)
+async def content_remove_episode_callback(client: Client, callback_query: CallbackQuery):
+    """Handles admin confirming removing an episode."""
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+    data = callback_query.data # content_remove_episode|<anime_id>|<season>|<ep>
+
+    if user_id not in config.ADMIN_IDS: await callback_query.answer("🚫 You are not authorized.", show_alert=True); return
+    await callback_query.answer("Removing episode...")
+
+    user_state = await get_user_state(user_id)
+    # State should be MANAGING_EPISODE_MENU (the options menu for the episode)
+    if not (user_state and user_state.handler == "content_management" and user_state.step == ContentState.MANAGING_EPISODE_MENU):
+         await callback_query.message.reply_text("🔄 Invalid state for removing episode.", parse_mode=config.PARSE_MODE)
+         await clear_user_state(user_id); return
+
+    try:
+        parts = data.split(config.CALLBACK_DATA_SEPARATOR)
+        if len(parts) != 4: raise ValueError("Invalid callback data format for removing episode.")
+        anime_id_str = parts[1]
+        season_number = int(parts[2])
+        episode_number = int(parts[3])
+
+        # Use $pull operator within $set to remove an element from the nested episodes array
+        # Requires matching both the anime and the specific season in the filter
+        update_result = await MongoDB.anime_collection().update_one(
+             {"_id": ObjectId(anime_id_str), "seasons.season_number": season_number},
+             {"$pull": {"seasons.$.episodes": {"episode_number": episode_number}}}
+        )
+
+        if update_result.modified_count > 0:
+            content_logger.info(f"Admin {user_id} removed episode {episode_number} from anime {anime_id_str} S{season_number}.")
+            await callback_query.message.edit_text(f"✅ Permanently removed Episode **__{episode_number:02d}__**.", parse_mode=config.PARSE_MODE)
+
+            # Return to the updated episodes list menu for this season
+            # Need to re-fetch episodes for the season and re-display.
+            anime_doc = await MongoDB.anime_collection().find_one(
+                 {"_id": ObjectId(anime_id_str)},
+                 {"name": 1, "seasons": {"$elemMatch": {"season_number": season_number}}}
+             )
+            if anime_doc and anime_doc.get("seasons"):
+                 anime_name = anime_doc.get("name", "Anime Name Unknown")
+                 season_data = anime_doc["seasons"][0]
+                 episodes = season_data.get("episodes", [])
+                 episodes.sort(key=lambda e: e.get("episode_number", 0)) # Sort
+                 # Clear the MANAGING_EPISODE_MENU state
+                 # Keep anime_id, season_number, anime_name in state, set step to MANAGING_EPISODES_LIST
+                 await set_user_state(
+                      user_id,
+                      "content_management",
+                      ContentState.MANAGING_EPISODES_LIST,
+                      data={k: v for k,v in user_state.data.items() if k not in ["episode_number", "temp_upload", "temp_metadata", "selected_audio_languages", "selected_subtitle_languages"]}
+                  )
+
+                 await display_episodes_management_list(client, callback_query.message, anime_id_str, anime_name, season_number, episodes)
+            else:
+                content_logger.error(f"Failed to fetch anime/season after episode removal for admin {user_id}: {anime_id_str}/S{season_number}.")
+                await callback_query.message.reply_text("💔 Removed episode, but failed to reload episodes list.", parse_mode=config.PARSE_MODE)
+
+
+        else:
+            content_logger.warning(f"Admin {user_id} clicked remove episode {episode_number} for {anime_id_str} S{season_number} but modified_count was 0. Already removed?")
+            await callback_query.message.edit_text(f"⚠️ Episode **__{episode_number:02d}__** was not found or already removed.", parse_mode=config.PARSE_MODE)
+            # Re-display the current episode management menu as no change was made. Needs refetch.
+            anime_doc = await MongoDB.anime_collection().find_one(
+                 {"_id": ObjectId(anime_id_str)},
+                 {"name": 1, "seasons": {"$elemMatch": {"season_number": season_number}}}
+            )
+            if anime_doc and anime_doc.get("seasons"):
+                anime_name = anime_doc.get("name", "Anime Name Unknown")
+                season_data = anime_doc["seasons"][0]
+                episodes = season_data.get("episodes", [])
+                current_episode = next((ep for ep in episodes if ep.get("episode_number") == episode_number), None)
+                if current_episode:
+                    # State should still be MANAGING_EPISODE_MENU, need to set it here if error handling altered it
+                    # Assuming state wasn't cleared, just need to re-display.
+                    await display_episode_management_menu(client, callback_query.message, anime_name, season_number, episode_number, current_episode)
+                else: # Episode *was* somehow removed between clicks
+                     content_logger.warning(f"Admin {user_id} failed removing ep {episode_number} because it's now gone.")
+                     # Need to reload episodes list view. Mock callback or call display function.
+                     anime_doc_seasons_only = await MongoDB.anime_collection().find_one( # Fetch only seasons and name
+                          {"_id": ObjectId(anime_id_str)}, {"seasons": 1, "name": 1}
+                      )
+                     if anime_doc_seasons_only:
+                         seasons_list_data = anime_doc_seasons_only.get("seasons", [])
+                         seasons_list_data.sort(key=lambda s: s.get("season_number", 0)) # Sort
+                         # Set state back to episodes list management for this season
+                         await set_user_state(user_id, "content_management", ContentState.MANAGING_EPISODES_LIST, data={"anime_id": anime_id_str, "season_number": season_number, "anime_name": anime_doc_seasons_only.get("name", "Anime Name Unknown")})
+
+                         # Re-fetch episode list specifically for this season to pass to display
+                         anime_doc_episodes_only = await MongoDB.anime_collection().find_one(
+                              {"_id": ObjectId(anime_id_str), "seasons.season_number": season_number},
+                              {"seasons.$": 1}
+                         )
+                         if anime_doc_episodes_only and anime_doc_episodes_only.get("seasons"):
+                             episodes = anime_doc_episodes_only["seasons"][0].get("episodes", [])
+                             episodes.sort(key=lambda e: e.get("episode_number", 0)) # Sort
+                             await display_episodes_management_list(client, callback_query.message, anime_doc_seasons_only.get("name", "Anime Name Unknown"), season_number, episodes)
+                         else:
+                             content_logger.error(f"Admin {user_id} failed fetching episode list after failed ep remove.")
+                             await callback_query.message.reply_text("💔 Failed to reload episodes list.", parse_mode=config.PARSE_MODE)
+
+                     else: # Cannot even fetch the anime anymore
+                           content_logger.error(f"Admin {user_id} failed fetching anime after failed ep remove attempt: {anime_id_str}")
+                           await callback_query.message.reply_text("💔 Anime not found.", parse_mode=config.PARSE_MODE)
+                           await clear_user_state(user_id)
+
+
+    except ValueError:
+        await callback_query.message.reply_text("🚫 Invalid episode number data in callback.", parse_mode=config.PARSE_MODE)
+        # Stay in episode menu state
+
+    except Exception as e:
+         content_logger.error(f"Error handling content_remove_episode callback for admin {user_id}: {e}")
+         await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+         # Stay in episode menu state? Or clear state? Clear might be safer.
+         await clear_user_state(user_id)
+
+
+# Callback: content_go_next_episode|<anime_id>|<season_number>|<next_episode_number>
+# Logic: Find the next episode number, load its management menu (or redirect if it doesn't exist)
+@Client.on_callback_query(filters.regex("^content_go_next_episode\|.*\|.*\|.*") & filters.private)
+async def content_go_next_episode_callback(client: Client, callback_query: CallbackQuery):
+    """Handles admin clicking 'Next Episode' button."""
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+    data = callback_query.data # content_go_next_episode|<anime_id>|<season>|<ep>
+
+    if user_id not in config.ADMIN_IDS: await callback_query.answer("🚫 You are not authorized.", show_alert=True); return
+    await callback_query.answer("Going to next episode...")
+
+    user_state = await get_user_state(user_id)
+    # State should be MANAGING_EPISODE_MENU or UPLOADING_FILE/SELECTING_METADATA after adding a version
+    # Simplest: If in a CM state, allow navigation, but ensure state is updated correctly.
+    if not (user_state and user_state.handler == "content_management"):
+         await callback_query.message.reply_text("🔄 Invalid state for going to next episode.", parse_mode=config.PARSE_MODE)
+         await clear_user_state(user_id); return
+
+    try:
+        parts = data.split(config.CALLBACK_DATA_SEPARATOR)
+        if len(parts) != 4: raise ValueError("Invalid callback data format for next episode.")
+        anime_id_str = parts[1]
+        season_number = int(parts[2])
+        next_episode_number = int(parts[3]) # This is the TARGET episode number
+
+        # Find the anime, season, and the target episode
+        anime_doc = await MongoDB.anime_collection().find_one(
+             {"_id": ObjectId(anime_id_str)},
+             {"name": 1, "seasons": {"$elemMatch": {"season_number": season_number}}}
+        )
+
+        if not anime_doc or not anime_doc.get("seasons"):
+             content_logger.error(f"Admin {user_id} going to next ep, but anime/season not found: {anime_id_str}/S{season_number}")
+             await callback_query.message.edit_text("💔 Error: Anime or season not found.", parse_mode=config.PARSE_MODE)
+             await clear_user_state(user_id); return
+
+        anime_name = anime_doc.get("name", "Anime Name Unknown")
+        season_data = anime_doc["seasons"][0]
+        episodes = season_data.get("episodes", [])
+
+        # Find the specific target episode
+        target_episode = next((ep for ep in episodes if ep.get("episode_number") == next_episode_number), None)
+
+        if target_episode:
+             content_logger.info(f"Admin {user_id} going to next episode: {anime_name} S{season_number}E{next_episode_number}")
+
+             # --- Transition to Managing Episode Menu State for the Next Episode ---
+             await set_user_state(
+                  user_id,
+                  "content_management",
+                  ContentState.MANAGING_EPISODE_MENU, # Set to managing the *next* episode
+                  data={
+                      "anime_id": anime_id_str,
+                      "season_number": season_number,
+                      "episode_number": next_episode_number,
+                      "anime_name": anime_name,
+                      # Remove temp file data if any from previous step
+                      "temp_upload": None,
+                      "temp_metadata": None,
+                      "selected_audio_languages": None,
+                      "selected_subtitle_languages": None
+                  }
+              )
+
+             # Display management options for the next episode
+             await display_episode_management_menu(client, callback_query.message, anime_name, season_number, next_episode_number, target_episode)
+
+        else:
+             # Target episode number does not exist (e.g., it's the last episode + 1)
+             content_logger.info(f"Admin {user_id} attempted to go to next episode E{next_episode_number} which does not exist for {anime_name} S{season_number}.")
+             await callback_query.message.edit_text(f"🎬 You've reached the end of Season **__{season_number}__**'s episodes.", parse_mode=config.PARSE_MODE)
+             # After reaching the end, route back to the episodes list for this season
+             # Needs to fetch the episodes list to pass to the display function.
+             anime_doc_episodes_only = await MongoDB.anime_collection().find_one(
+                   {"_id": ObjectId(anime_id_str), "seasons.season_number": season_number},
+                   {"seasons.$": 1, "name": 1}
+             )
+             if anime_doc_episodes_only and anime_doc_episodes_only.get("seasons"):
+                  episodes_list = anime_doc_episodes_only["seasons"][0].get("episodes", [])
+                  episodes_list.sort(key=lambda e: e.get("episode_number", 0)) # Sort
+                  # Set state back to episodes list management for this season
+                  await set_user_state(user_id, "content_management", ContentState.MANAGING_EPISODES_LIST, data={"anime_id": anime_id_str, "season_number": season_number, "anime_name": anime_doc_episodes_only.get("name", "Anime Name Unknown")})
+
+                  await display_episodes_management_list(client, callback_query.message, anime_doc_episodes_only.get("name", "Anime Name Unknown"), season_number, episodes_list)
+             else:
+                  content_logger.error(f"Admin {user_id} failed fetching episode list after going past last ep.")
+                  await callback_query.message.reply_text("💔 Failed to reload episodes list.", parse_mode=config.PARSE_MODE)
+
+
+
+    except ValueError:
+        await callback_query.message.reply_text("🚫 Invalid episode number data in callback.", parse_mode=config.PARSE_MODE)
+        # Stay in episode menu state
+
+    except Exception as e:
+         content_logger.error(f"Error handling content_go_next_episode callback for admin {user_id}: {e}")
+         await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+         # Stay in episode menu state? Clear state? Clear seems safer if complex error.
+         await clear_user_state(user_id)
+
+# Callback: content_add_release_date|<anime_id>|<season_number>|<episode_number>
+@Client.on_callback_query(filters.regex("^content_add_release_date\|.*\|.*\|.*") & filters.private)
+async def content_add_release_date_callback(client: Client, callback_query: CallbackQuery):
+    """Handles admin clicking Add Release Date for an episode."""
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+    data = callback_query.data # content_add_release_date|<anime_id>|<season>|<ep>
+
+    if user_id not in config.ADMIN_IDS: await callback_query.answer("🚫 You are not authorized.", show_alert=True); return
+    await callback_query.answer()
+
+    user_state = await get_user_state(user_id)
+    # State should be MANAGING_EPISODE_MENU
+    if not (user_state and user_state.handler == "content_management" and user_state.step == ContentState.MANAGING_EPISODE_MENU):
+         await callback_query.message.reply_text("🔄 Invalid state for adding release date.", parse_mode=config.PARSE_MODE)
+         await clear_user_state(user_id); return
+
+    try:
+        parts = data.split(config.CALLBACK_DATA_SEPARATOR)
+        if len(parts) != 4: raise ValueError("Invalid callback data format for release date.")
+        anime_id_str = parts[1]
+        season_number = int(parts[2])
+        episode_number = int(parts[3])
+
+        anime_name = user_state.data.get("anime_name", "Anime") # Get name from state
+        # Check state data matches callback data as a safety
+        if user_state.data.get("anime_id") != anime_id_str or user_state.data.get("season_number") != season_number or user_state.data.get("episode_number") != episode_number:
+             content_logger.warning(f"Admin {user_id} state data mismatch for add release date: {user_state.data} vs callback {data}")
+             # Update state data to match callback for robustness? Or treat as error? Let's update state data.
+             user_state.data.update({"anime_id": anime_id_str, "season_number": season_number, "episode_number": episode_number})
+             await set_user_state(user_id, "content_management", user_state.step, data=user_state.data)
+
+
+        # Transition to the state waiting for the release date input
+        await set_user_state(user_id, "content_management", ContentState.AWAITING_RELEASE_DATE_INPUT, data=user_state.data) # Keep episode context
+
+        # Prompt admin for release date
+        prompt_text = PROMPT_RELEASE_DATE.format(episode_number=episode_number, anime_name=anime_name)
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")]])
+
+        await callback_query.message.edit_text(
+            prompt_text,
+            reply_markup=reply_markup,
+            parse_mode=config.PARSE_MODE
+        )
+
+    except Exception as e:
+        content_logger.error(f"Error handling content_add_release_date callback for admin {user_id}: {e}")
+        await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+        await clear_user_state(user_id)
+
+
+# Handle text input when in AWAITING_RELEASE_DATE_INPUT state
+async def handle_awaiting_release_date_input(client: Client, message: Message, user_state: UserState, date_text: str):
+    """Handles admin text input when in the AWAITING_RELEASE_DATE_INPUT state (expects date string)."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    anime_id_str = user_state.data.get("anime_id")
+    season_number = user_state.data.get("season_number")
+    episode_number = user_state.data.get("episode_number")
+    anime_name = user_state.data.get("anime_name", "Anime")
+
+
+    if not all([anime_id_str, season_number is not None, episode_number is not None]):
+        content_logger.error(f"Admin {user_id} sent date input but missing required state data.")
+        await message.reply_text("💔 Error: State data missing for release date input. Process cancelled.", parse_mode=config.PARSE_MODE)
+        await clear_user_state(user_id); return
+
+
+    content_logger.info(f"Admin {user_id} provided release date input '{date_text}' for {anime_name} S{season_number}E{episode_number}.")
+
+    # Validate and parse the date string (expects DD/MM/YYYY)
+    try:
+        # Need to import datetime again or ensure it's globally available (already is)
+        # Use strptime to parse the string into a datetime object
+        release_date_obj = datetime.strptime(date_text, '%d/%m/%Y').replace(tzinfo=timezone.utc) # Assume input is UTC or handle timezones
+
+        # Update the specific episode document in the DB to set the release_date and remove 'files' array (if any)
+        # Using $set on a nested array element and $unset to remove 'files'
+        update_result = await MongoDB.anime_collection().update_one(
+             {"_id": ObjectId(anime_id_str), "seasons.season_number": season_number, "seasons.0.episodes.episode_number": episode_number}, # Filter to the exact episode using multiple levels
+             {
+                  "$set": {
+                       "seasons.$.episodes.$.release_date": release_date_obj, # Positional operators
+                       "last_updated_at": datetime.now(timezone.utc) # Update top-level
+                  },
+                  "$unset": {"seasons.$.episodes.$.files": ""} # Remove the files array
+             }
+             # Using positional operator with multiple levels ($[]) requires MongoDB version >= 3.6 and specific index considerations
+             # Simpler approach for nested array updates might involve finding, modifying in memory, then saving the parent document,
+             # BUT this can lead to race conditions if multiple admins edit same doc.
+             # The $[] positional operator is generally better if the schema supports it.
+             # The $ pull could also be used to remove files: {$pull: {"seasons.$.episodes.$.files": { "$exists": True } } } -- pull removes *elements*, not sets field to null. $unset is correct for removing field.
+        )
+
+        if update_result.modified_count > 0:
+            content_logger.info(f"Admin {user_id} set release date for {anime_id_str}/S{season_number}E{episode_number}.")
+            await message.reply_text(RELEASE_DATE_SET_SUCCESS.format(episode_number=episode_number, release_date=date_text), parse_mode=config.PARSE_MODE)
+
+            # Return to the episode management menu for this episode (which will now show the date)
+            # Need to re-fetch episode data
+            anime_doc = await MongoDB.anime_collection().find_one( # Fetch the specific episode's context
+                 {"_id": ObjectId(anime_id_str), "seasons.season_number": season_number, "seasons.0.episodes.episode_number": episode_number},
+                 {"name": 1, "seasons.episode_number": 1, "seasons.$": 1} # Project useful fields, incl the matching season
+            )
+
+            if anime_doc and anime_doc.get("seasons"):
+                 anime_name = anime_doc.get("name", "Anime Name Unknown")
+                 season_data = anime_doc["seasons"][0] # The matching season
+                 episodes = season_data.get("episodes", []) # The episodes *list* of the matching season
+                 # Find the updated episode in the list (should be the one just updated)
+                 updated_episode = next((ep for ep in episodes if ep.get("episode_number") == episode_number), None)
+
+                 if updated_episode:
+                     # Clear the AWAITING_RELEASE_DATE_INPUT state
+                     updated_state_data = {k: v for k, v in user_state.data.items() if k != "temp_input"} # Clean state data
+                     await set_user_state(user_id, "content_management", ContentState.MANAGING_EPISODE_MENU, data=updated_state_data) # Back to episode menu state
+
+                     await display_episode_management_menu(client, message, anime_name, season_number, episode_number, updated_episode)
+                 else: raise Exception("Updated episode not found in refetch.")
+
+            else:
+                content_logger.error(f"Failed to fetch anime/season/episode after setting release date for admin {user_id}.")
+                await message.reply_text("💔 Set release date, but failed to reload episode menu.", parse_mode=config.PARSE_MODE)
+
+
+        else:
+             # Modified count is 0 - season/episode not found by update query? Or same date entered?
+             content_logger.warning(f"Admin {user_id} set release date for {anime_id_str}/S{season_number}E{episode_number} but modified_count was 0.")
+             await message.reply_text("⚠️ Release date update modified 0 documents. Episode not found or same date entered? No changes made.", parse_mode=config.PARSE_MODE)
+             # State is still AWAITING_RELEASE_DATE_INPUT, can re-enter date or cancel
+
+
+    except ValueError:
+        # Invalid date format
+        await message.reply_text(INVALID_DATE_FORMAT, parse_mode=config.PARSE_MODE)
+        # State remains AWAITING_RELEASE_DATE_INPUT, user needs to try again
+
+    except Exception as e:
+         content_logger.error(f"Error handling release date input for admin {user_id}: {e}")
+         await message.reply_text("💔 Error saving release date.", parse_mode=config.PARSE_MODE)
+         # State is AWAITING_RELEASE_DATE_INPUT, maybe clear state on complex errors?
+         await clear_user_state(user_id)
+
+# Callback: content_add_file_version|<anime_id>|<season_number>|<episode_number>
+@Client.on_callback_query(filters.regex("^content_add_file_version\|.*\|.*\|.*") & filters.private)
+async def content_add_file_version_callback(client: Client, callback_query: CallbackQuery):
+    """Handles admin clicking Add File Version for an episode."""
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+    data = callback_query.data # content_add_file_version|<anime_id>|<season>|<ep>
+
+    if user_id not in config.ADMIN_IDS: await callback_query.answer("🚫 You are not authorized.", show_alert=True); return
+    await callback_query.answer()
+
+    user_state = await get_user_state(user_id)
+    # State should be MANAGING_EPISODE_MENU or perhaps UPLOADING_FILE if they cancel and retry add file
+    # Allow from episode menu or re-entry? Require episode menu for cleaner flow.
+    if not (user_state and user_state.handler == "content_management" and user_state.step == ContentState.MANAGING_EPISODE_MENU):
+         await callback_query.message.reply_text("🔄 Invalid state for adding file version.", parse_mode=config.PARSE_MODE)
+         await clear_user_state(user_id); return
+
+
+    try:
+        parts = data.split(config.CALLBACK_DATA_SEPARATOR)
+        if len(parts) != 4: raise ValueError("Invalid callback data format for add file version.")
+        anime_id_str = parts[1]
+        season_number = int(parts[2])
+        episode_number = int(parts[3])
+
+        # Check state data matches callback for robustness
+        if user_state.data.get("anime_id") != anime_id_str or user_state.data.get("season_number") != season_number or user_state.data.get("episode_number") != episode_number:
+             content_logger.warning(f"Admin {user_id} state data mismatch for add file version: {user_state.data} vs callback {data}")
+             # Update state data to match callback data
+             user_state.data.update({"anime_id": anime_id_str, "season_number": season_number, "episode_number": episode_number})
+             await set_user_state(user_id, "content_management", user_state.step, data=user_state.data)
+
+
+        anime_name = user_state.data.get("anime_name", "Anime") # Get name from state
+
+        # Transition to the state waiting for the file upload
+        await set_user_state(user_id, "content_management", ContentState.UPLOADING_FILE, data=user_state.data) # Keep episode context
+
+        # Prompt admin to upload the file
+        prompt_text = ADD_FILE_PROMPT.format(episode_number=episode_number, season_number=season_number, anime_name=anime_name)
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")]])
+
+        await callback_query.message.edit_text(
+            prompt_text,
+            reply_markup=reply_markup,
+            parse_mode=config.PARSE_MODE
+        )
+
+    except Exception as e:
+        content_logger.error(f"Error handling content_add_file_version callback for admin {user_id}: {e}")
+        await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+        await clear_user_state(user_id)
+
+# handle_episode_file_upload is called by common_handlers when file received in UPLOADING_FILE state.
+# It stores temp file data in state.data and transitions to SELECTING_METADATA_QUALITY state.
+
+
+# --- Metadata Selection Callbacks & Input Handling ---
+# This is a complex multi-step flow using callbacks for selection and potentially text for manual entry.
+
+# This callback handler builds the Quality selection keyboard.
+# State: SELECTING_METADATA_QUALITY (triggered by handle_episode_file_upload)
+async def prompt_for_metadata_quality(client: Client, chat_id: int):
+    """Sends the prompt and buttons for admin to select file quality."""
+    prompt_text = ADD_FILE_METADATA_PROMPT_BUTTONS.format()
+    qualities = config.QUALITY_PRESETS # Use presets
+
+    buttons = []
+    for quality in qualities:
+         # Callback data: content_select_quality|<quality_value>
+         buttons.append(InlineKeyboardButton(quality, callback_data=f"content_select_quality|{quality}"))
+
+    keyboard_rows = [buttons[i:i + config.MAX_BUTTONS_PER_ROW] for i in range(0, len(buttons), config.MAX_BUTTONS_PER_ROW)]
+    # Add Cancel button
+    keyboard_rows.append([InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")])
+    reply_markup = InlineKeyboardMarkup(keyboard_rows)
+
+    try:
+        await client.send_message(
+             chat_id=chat_id,
+             text=prompt_text,
+             reply_markup=reply_markup,
+             parse_mode=config.PARSE_MODE
+         )
+    except Exception as e:
+        content_logger.error(f"Failed to send quality prompt to chat {chat_id}: {e}")
+
+# Handler for Quality selection callback
+@Client.on_callback_query(filters.regex("^content_select_quality\|.*") & filters.private)
+async def content_select_quality_callback(client: Client, callback_query: CallbackQuery):
+    """Handles admin selecting file quality via buttons."""
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+    data = callback_query.data # content_select_quality|<quality_value>
+
+    if user_id not in config.ADMIN_IDS: await callback_query.answer("🚫 You are not authorized.", show_alert=True); return
+    await callback_query.answer() # Acknowledge
+
+    user_state = await get_user_state(user_id)
+    # State should be SELECTING_METADATA_QUALITY
+    if not (user_state and user_state.handler == "content_management" and user_state.step == ContentState.SELECTING_METADATA_QUALITY):
+         await callback_query.message.reply_text("🔄 Invalid state for selecting quality.", parse_mode=config.PARSE_MODE)
+         await clear_user_state(user_id); return
+
+
+    try:
+        parts = data.split(config.CALLBACK_DATA_SEPARATOR)
+        if len(parts) != 2: raise ValueError("Invalid callback data format for selecting quality.")
+        selected_quality = parts[1]
+
+        # Validate against presets (optional, admin might type later)
+        # if selected_quality not in config.QUALITY_PRESETS:
+        #      await callback_query.message.reply_text("🚫 Invalid quality selected.", parse_mode=config.PARSE_MODE); return
+
+        # Store selected quality in temporary metadata state data
+        # Use a separate nested dict for temp metadata being collected
+        temp_metadata = user_state.data.get("temp_metadata", {})
+        temp_metadata["quality_resolution"] = selected_quality
+        user_state.data["temp_metadata"] = temp_metadata
+
+        # Move to the next step: SELECTING_METADATA_AUDIO
+        await set_user_state(user_id, "content_management", ContentState.SELECTING_METADATA_AUDIO, data=user_state.data)
+
+        # Prompt for Audio Languages selection (Callback-based, multi-select)
+        await prompt_for_metadata_audio(client, chat_id, []) # Start with empty selection
+
+        # Edit the previous message to confirm quality and prompt for audio
+        try:
+             await callback_query.message.edit_text(
+                 f"💎 Quality selected: **__{selected_quality}__**.\n\n{PROMPT_AUDIO_LANGUAGES_BUTTONS}",
+                 parse_mode=config.PARSE_MODE,
+                 disable_web_page_preview=True
+             )
+        except Exception as e:
+              content_logger.warning(f"Failed to edit message after quality select for admin {user_id}: {e}")
+              await client.send_message(chat_id, f"💎 Quality selected: **__{selected_quality}__**.\n\n{PROMPT_AUDIO_LANGUAGES_BUTTONS}", parse_mode=config.PARSE_MODE)
+
+
+    except Exception as e:
+        content_logger.error(f"Error handling content_select_quality callback for admin {user_id}: {e}")
+        await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+        # State is SELECTING_METADATA_QUALITY. Could stay there.
+        # await clear_user_state(user_id) # Clear state if unsure
+
+
+# This callback handler builds the Audio selection keyboard (multi-select)
+async def prompt_for_metadata_audio(client: Client, chat_id: int, current_selection: List[str]):
+    """Sends the prompt and buttons for admin to select audio languages."""
+    prompt_text = PROMPT_AUDIO_LANGUAGES_BUTTONS
+    languages = config.AUDIO_LANGUAGES_PRESETS # Use presets
+
+    buttons = []
+    for lang in languages:
+        # Indicate selection state: content_toggle_audio|<language_value>
+        is_selected = lang in current_selection
+        button_text = f"🎧 {lang}" if is_selected else lang
+        buttons.append(InlineKeyboardButton(button_text, callback_data=f"content_toggle_audio|{lang}"))
+
+    keyboard_rows = [buttons[i:i + config.MAX_BUTTONS_PER_ROW] for i in range(0, len(buttons), config.MAX_BUTTONS_PER_ROW)]
+
+    # Add Done and Cancel buttons
+    keyboard_rows.append([
+        InlineKeyboardButton(BUTTON_METADATA_DONE_SELECTING.format(metadata_type="Audio Languages"), callback_data="content_audio_done"),
+        InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")
+    ])
+    reply_markup = InlineKeyboardMarkup(keyboard_rows)
+
+    try:
+        # Edit the previous message to display the new set of buttons
+        await client.send_message( # Usually triggered after QUALITY selection, send NEW message for clarity?
+             chat_id=chat_id, # Or edit message with quality? Editing is cleaner.
+             text=prompt_text, # Message text already set in SELECT_QUALITY callback's edit
+             reply_markup=reply_markup,
+             parse_mode=config.PARSE_MODE
+         )
+    except Exception as e:
+        content_logger.error(f"Failed to send audio languages prompt to chat {chat_id}: {e}")
+
+# Handler for Audio Language toggling (multi-select)
+@Client.on_callback_query(filters.regex("^content_toggle_audio\|.*") & filters.private)
+async def content_toggle_audio_callback(client: Client, callback_query: CallbackQuery):
+    """Handles admin toggling audio language selection via buttons."""
+    user_id = callback_query.from_user.id
+    # chat_id = callback_query.message.chat.id # Needed for retry editing?
+
+    if user_id not in config.ADMIN_IDS: await callback_query.answer("🚫 You are not authorized.", show_alert=True); return
+    await callback_query.answer() # Acknowledge immediately
+
+    user_state = await get_user_state(user_id)
+    # State should be SELECTING_METADATA_AUDIO
+    if not (user_state and user_state.handler == "content_management" and user_state.step == ContentState.SELECTING_METADATA_AUDIO):
+        content_logger.warning(f"Admin {user_id} clicked audio toggle callback but state is {user_state}.")
+        await callback_query.message.reply_text("🔄 Invalid state for selecting audio.", parse_mode=config.PARSE_MODE)
+        await clear_user_state(user_id); return
+
+
+    try:
+        parts = data.split(config.CALLBACK_DATA_SEPARATOR)
+        if len(parts) != 2: raise ValueError("Invalid callback data format for toggling audio language.")
+        language_to_toggle = parts[1]
+
+        # Get currently selected audio languages from state data, initialize if not present
+        temp_metadata = user_state.data.get("temp_metadata", {})
+        selected_audio_languages = temp_metadata.get("audio_languages", [])
+
+        # Toggle the language
+        if language_to_toggle in selected_audio_languages:
+            selected_audio_languages.remove(language_to_toggle)
+        else:
+             selected_audio_languages.append(language_to_toggle)
+             # Add validation if max selected needed?
+
+        # Update the selected languages in state data
+        temp_metadata["audio_languages"] = selected_audio_languages
+        user_state.data["temp_metadata"] = temp_metadata # Update the whole nested dict
+
+        # We need to save the state update back to DB before editing the message/keyboard
+        # Or ensure set_user_state does a merge update?
+        # set_user_state({"temp_metadata": temp_metadata})
+        # Our set_user_state(..., data=...) *replaces* data. Need to pass updated *full* data dict.
+        await set_user_state(user_id, ContentState.SELECTING_METADATA_AUDIO.split(':')[0], ContentState.SELECTING_METADATA_AUDIO.split(':')[1], data=user_state.data) # Pass updated state.data
+
+
+        # Recreate the audio selection keyboard with updated states
+        prompt_text = PROMPT_AUDIO_LANGUAGES_BUTTONS # Use the base prompt again
+        languages = config.AUDIO_LANGUAGES_PRESETS
+        buttons = []
+        for lang in languages:
+            is_selected = lang in selected_audio_languages
+            button_text = f"🎧 {lang}" if is_selected else lang # Use '🎧' as selected indicator
+            buttons.append(InlineKeyboardButton(button_text, callback_data=f"content_toggle_audio|{lang}"))
+
+        keyboard_rows = [buttons[i:i + config.MAX_BUTTONS_PER_ROW] for i in range(0, len(buttons), config.MAX_BUTTONS_PER_ROW)]
+        keyboard_rows.append([
+             InlineKeyboardButton(BUTTON_METADATA_DONE_SELECTING.format(metadata_type="Audio Languages"), callback_data="content_audio_done"),
+             InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")
+        ])
+        reply_markup = InlineKeyboardMarkup(keyboard_rows)
+
+        # Edit the message to reflect the new selection using edit_reply_markup
+        try:
+             # Just edit the reply markup to avoid MessageNotModified issues if text hasn't changed
+             await callback_query.message.edit_reply_markup(reply_markup)
+        except MessageNotModified:
+            pass
+        except FloodWait as e:
+            content_logger.warning(f"FloodWait while editing audio buttons for admin {user_id}: {e.value}")
+            await asyncio.sleep(e.value)
+            try: await callback_query.message.edit_reply_markup(reply_markup)
+            except Exception: pass # Ignore retry failure
+
+    except Exception as e:
+        content_logger.error(f"Error handling content_toggle_audio callback for admin {user_id}: {e}")
+        await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+        # Stay in state
+
+
+# Handler for the "Done Selecting Audio" button
+@Client.on_callback_query(filters.regex("^content_audio_done$") & filters.private)
+async def content_audio_done_callback(client: Client, callback_query: CallbackQuery):
+    """Handles admin clicking Done after selecting audio languages."""
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+
+    if user_id not in config.ADMIN_IDS: await callback_query.answer("🚫 You are not authorized.", show_alert=True); return
+    await callback_query.answer("Audio languages selected.")
+
+    user_state = await get_user_state(user_id)
+    # State should be SELECTING_METADATA_AUDIO
+    if not (user_state and user_state.handler == "content_management" and user_state.step == ContentState.SELECTING_METADATA_AUDIO):
+        content_logger.warning(f"Admin {user_id} clicked Done Audio but state is {user_state}.")
+        await callback_query.message.reply_text("🔄 Invalid state. Please restart the process.", parse_mode=config.PARSE_MODE)
+        await clear_user_state(user_id); return
+
+    temp_metadata = user_state.data.get("temp_metadata", {})
+    selected_audio_languages = temp_metadata.get("audio_languages", [])
+    content_logger.info(f"Admin {user_id} finished selecting audio languages: {selected_audio_languages}")
+
+    # Move to the next step: SELECTING_METADATA_SUBTITLES
+    await set_user_state(user_id, "content_management", ContentState.SELECTING_METADATA_SUBTITLES, data=user_state.data) # Keep state data with audio selection
+
+    # Prompt for Subtitle Languages selection (Callback-based, multi-select)
+    await prompt_for_metadata_subtitles(client, chat_id, []) # Start with empty selection
+
+    # Edit the message to confirm audio selection and prompt for subtitles
+    try:
+        await callback_query.message.edit_text(
+            f"🎧 Audio Languages saved: {', '.join(selected_audio_languages) if selected_audio_languages else 'None'}.\n\n{PROMPT_SUBTITLE_LANGUAGES_BUTTONS}",
+            parse_mode=config.PARSE_MODE,
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        content_logger.warning(f"Failed to edit message after audio done for admin {user_id}: {e}")
+        await client.send_message(chat_id, f"✅ Audio Languages saved. Please select **__Subtitle Languages__**.", parse_mode=config.PARSE_MODE)
+
+
+# This callback handler builds the Subtitle selection keyboard (multi-select)
+async def prompt_for_metadata_subtitles(client: Client, chat_id: int, current_selection: List[str]):
+    """Sends the prompt and buttons for admin to select subtitle languages."""
+    prompt_text = PROMPT_SUBTITLE_LANGUAGES_BUTTONS
+    languages = config.SUBTITLE_LANGUAGES_PRESETS # Use presets
+
+    buttons = []
+    for lang in languages:
+        # Indicate selection state: content_toggle_subtitle|<language_value>
+        is_selected = lang in current_selection
+        button_text = f"📝 {lang}" if is_selected else lang
+        buttons.append(InlineKeyboardButton(button_text, callback_data=f"content_toggle_subtitle|{lang}"))
+
+    keyboard_rows = [buttons[i:i + config.MAX_BUTTONS_PER_ROW] for i in range(0, len(buttons), config.MAX_BUTTONS_PER_ROW)]
+
+    # Add Done and Cancel buttons
+    keyboard_rows.append([
+        InlineKeyboardButton(BUTTON_METADATA_DONE_SELECTING.format(metadata_type="Subtitle Languages"), callback_data="content_subtitles_done"),
+        InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")
+    ])
+    reply_markup = InlineKeyboardMarkup(keyboard_rows)
+
+    try:
+        await client.send_message( # Send NEW message for clarity? Or edit the audio done message? Edit is cleaner.
+             chat_id=chat_id, # This assumes the text message sent from content_audio_done exists.
+             text=prompt_text, # Message text is already set in audio_done callback
+             reply_markup=reply_markup,
+             parse_mode=config.PARSE_MODE
+         )
+    except Exception as e:
+        content_logger.error(f"Failed to send subtitle languages prompt to chat {chat_id}: {e}")
+
+# Handler for Subtitle Language toggling (multi-select)
+@Client.on_callback_query(filters.regex("^content_toggle_subtitle\|.*") & filters.private)
+async def content_toggle_subtitle_callback(client: Client, callback_query: CallbackQuery):
+    """Handles admin toggling subtitle language selection via buttons."""
+    user_id = callback_query.from_user.id
+
+    if user_id not in config.ADMIN_IDS: await callback_query.answer("🚫 You are not authorized.", show_alert=True); return
+    await callback_query.answer()
+
+    user_state = await get_user_state(user_id)
+    # State should be SELECTING_METADATA_SUBTITLES
+    if not (user_state and user_state.handler == "content_management" and user_state.step == ContentState.SELECTING_METADATA_SUBTITLES):
+        content_logger.warning(f"Admin {user_id} clicked subtitle toggle callback but state is {user_state}.")
+        await callback_query.message.reply_text("🔄 Invalid state for selecting subtitles.", parse_mode=config.PARSE_MODE)
+        await clear_user_state(user_id); return
+
+    try:
+        parts = data.split(config.CALLBACK_DATA_SEPARATOR)
+        if len(parts) != 2: raise ValueError("Invalid callback data format for toggling subtitle language.")
+        language_to_toggle = parts[1]
+
+        # Get currently selected subtitle languages from state data
+        temp_metadata = user_state.data.get("temp_metadata", {})
+        selected_subtitle_languages = temp_metadata.get("subtitle_languages", [])
+
+
+        if language_to_toggle in selected_subtitle_languages:
+            selected_subtitle_languages.remove(language_to_toggle)
+        else:
+             selected_subtitle_languages.append(language_to_toggle)
+
+        # Update the selected languages in state data
+        temp_metadata["subtitle_languages"] = selected_subtitle_languages
+        user_state.data["temp_metadata"] = temp_metadata # Update nested dict
+
+        await set_user_state(user_id, ContentState.SELECTING_METADATA_SUBTITLES.split(':')[0], ContentState.SELECTING_METADATA_SUBTITLES.split(':')[1], data=user_state.data) # Save state
+
+
+        # Recreate the subtitle selection keyboard with updated states
+        prompt_text = PROMPT_SUBTITLE_LANGUAGES_BUTTONS
+        languages = config.SUBTITLE_LANGUAGES_PRESETS
+        buttons = []
+        for lang in languages:
+            is_selected = lang in selected_subtitle_languages
+            button_text = f"📝 {lang}" if is_selected else lang # Use '📝' as selected indicator
+            buttons.append(InlineKeyboardButton(button_text, callback_data=f"content_toggle_subtitle|{lang}"))
+
+        keyboard_rows = [buttons[i:i + config.MAX_BUTTONS_PER_ROW] for i in range(0, len(buttons), config.MAX_BUTTONS_PER_ROW)]
+        keyboard_rows.append([
+             InlineKeyboardButton(BUTTON_METADATA_DONE_SELECTING.format(metadata_type="Subtitle Languages"), callback_data="content_subtitles_done"),
+             InlineKeyboardButton(BUTTON_CANCEL, callback_data="content_cancel")
+        ])
+        reply_markup = InlineKeyboardMarkup(keyboard_rows)
+
+        # Edit the message to reflect the new selection
+        try:
+             await callback_query.message.edit_reply_markup(reply_markup)
+        except MessageNotModified:
+            pass
+        except FloodWait as e:
+            content_logger.warning(f"FloodWait while editing subtitle buttons for admin {user_id}: {e.value}")
+            await asyncio.sleep(e.value)
+            try: await callback_query.message.edit_reply_markup(reply_markup)
+            except Exception: pass # Ignore retry failure
+
+    except Exception as e:
+        content_logger.error(f"Error handling content_toggle_subtitle callback for admin {user_id}: {e}")
+        await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+        # Stay in state
+
+
+# Handler for the "Done Selecting Subtitles" button
+@Client.on_callback_query(filters.regex("^content_subtitles_done$") & filters.private)
+async def content_subtitles_done_callback(client: Client, callback_query: CallbackQuery):
+    """Handles admin clicking Done after selecting subtitle languages."""
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+
+    if user_id not in config.ADMIN_IDS: await callback_query.answer("🚫 You are not authorized.", show_alert=True); return
+    await callback_query.answer("Subtitle languages selected. Finalizing...")
+
+    user_state = await get_user_state(user_id)
+    # State should be SELECTING_METADATA_SUBTITLES
+    if not (user_state and user_state.handler == "content_management" and user_state.step == ContentState.SELECTING_METADATA_SUBTITLES):
+        content_logger.warning(f"Admin {user_id} clicked Done Subtitles but state is {user_state}.")
+        await callback_query.message.reply_text("🔄 Invalid state. Please restart the process.", parse_mode=config.PARSE_MODE)
+        await clear_user_state(user_id); return
+
+    temp_metadata = user_state.data.get("temp_metadata", {})
+    selected_subtitle_languages = temp_metadata.get("subtitle_languages", [])
+
+    # --- All Metadata Collected! Now Save the FileVersion to the Episode! ---
+    # Retrieve temp file and episode context from state data
+    temp_upload_data = user_state.data.get("temp_upload")
+    anime_id_str = user_state.data.get("anime_id")
+    season_number = user_state.data.get("season_number")
+    episode_number = user_state.data.get("episode_number")
+
+    if not all([temp_upload_data, anime_id_str, season_number is not None, episode_number is not None]):
+        content_logger.error(f"Admin {user_id} finished metadata selection but missing temp_upload or episode context from state.")
+        await callback_query.message.reply_text("💔 Error: Required data missing from state. File not saved. Process cancelled.", parse_mode=config.PARSE_MODE)
+        await clear_user_state(user_id); return
+
+    # Ensure quality and audio languages are also present in temp_metadata (should be from previous steps)
+    selected_quality = temp_metadata.get("quality_resolution")
+    selected_audio_languages = temp_metadata.get("audio_languages", []) # Default to empty list if somehow missing
+
+
+    if not selected_quality:
+        content_logger.error(f"Admin {user_id} finished metadata but quality is missing from temp_metadata state.")
+        await callback_query.message.reply_text("💔 Error: Quality missing from state data. File not saved. Process cancelled.", parse_mode=config.PARSE_MODE)
+        await clear_user_state(user_id); return
+
+    # Create the FileVersion Pydantic model instance from collected data
+    try:
+         file_version_data = {
+              "file_id": temp_upload_data.get("file_id"),
+              "file_unique_id": temp_upload_data.get("file_unique_id"),
+              "file_name": temp_upload_data.get("file_name"),
+              "file_size_bytes": temp_upload_data.get("file_size_bytes"),
+              "quality_resolution": selected_quality,
+              "audio_languages": selected_audio_languages,
+              "subtitle_languages": selected_subtitle_languages,
+              "added_at": datetime.now(timezone.utc) # Set addition time
+         }
+         new_file_version = FileVersion(**file_version_data)
+
+    except Exception as e:
+        content_logger.error(f"Error creating FileVersion model for admin {user_id}: {e}. Data: {file_version_data}")
+        await callback_query.message.reply_text("💔 Error creating file data. File not saved. Process cancelled.", parse_mode=config.PARSE_MODE)
+        await clear_user_state(user_id); return
+
+
+    # Add the new FileVersion subdocument to the specific Episode in the Season in the Anime
+    # Use $push with positional operator
+    try:
+        update_result = await MongoDB.anime_collection().update_one(
+             {"_id": ObjectId(anime_id_str), "seasons.season_number": season_number, "seasons.0.episodes.episode_number": episode_number},
+             {
+                  "$push": {"seasons.$.episodes.$.files": model_to_mongo_dict(new_file_version)}, # Push the new file version dict
+                  "$set": {"last_updated_at": datetime.now(timezone.utc)} # Update top-level timestamp
+             }
+        )
+
+        if update_result.modified_count > 0:
+            content_logger.info(f"Admin {user_id} added file version ({new_file_version.quality_resolution}) to {anime_id_str}/S{season_number}E{episode_number}.")
+            await callback_query.message.edit_text(FILE_ADDED_SUCCESS.format(
+                episode_number=episode_number,
+                quality=new_file_version.quality_resolution,
+                audio='/'.join(new_file_version.audio_languages),
+                subs='/'.join(new_file_version.subtitle_languages)
+            ), parse_mode=config.PARSE_MODE)
+
+            # After saving the file, transition back to the episode management menu
+            # We need to fetch the episode data again to display the updated menu
+            anime_doc = await MongoDB.anime_collection().find_one(
+                 {"_id": ObjectId(anime_id_str), "seasons.season_number": season_number, "seasons.0.episodes.episode_number": episode_number},
+                 {"name": 1, "seasons.episode_number": 1, "seasons.$": 1}
+            )
+            if anime_doc and anime_doc.get("seasons"):
+                 anime_name = anime_doc.get("name", "Anime Name Unknown")
+                 season_data = anime_doc["seasons"][0]
+                 episodes_list = season_data.get("episodes", []) # Get episodes of this season
+                 updated_episode = next((ep for ep in episodes_list if ep.get("episode_number") == episode_number), None) # Find this specific episode
+
+                 if updated_episode:
+                     # Clear file upload/metadata selection states and temp data, set state back to managing episode
+                     # Remove temp_upload and temp_metadata, selected_audio/subtitle keys from state data
+                     updated_state_data = {k: v for k, v in user_state.data.items() if k not in ["temp_upload", "temp_metadata", "selected_audio_languages", "selected_subtitle_languages"]}
+                     await set_user_state(user_id, "content_management", ContentState.MANAGING_EPISODE_MENU, data=updated_state_data)
+
+                     await display_episode_management_menu(client, callback_query.message, anime_name, season_number, episode_number, updated_episode)
+                 else: raise Exception("Updated episode not found in refetch after saving file.")
+
+
+            else:
+                 content_logger.error(f"Failed to fetch anime/season/episode after saving file version for admin {user_id}.")
+                 await callback_query.message.reply_text("💔 Saved file, but failed to reload episode menu.", parse_mode=config.PARSE_MODE)
+                 await clear_user_state(user_id) # Clear state if cannot display menu
+
+        else:
+             content_logger.warning(f"Admin {user_id} finished metadata for {anime_id_str}/S{season_number}E{episode_number} but modified_count was 0.")
+             await callback_query.message.edit_text("⚠️ File version update modified 0 documents. Episode not found or something else prevented save?", parse_mode=config.PARSE_MODE)
+             # State is SELECTING_METADATA_SUBTITLES. Clear it as something went wrong.
+             await clear_user_state(user_id)
+
+    except Exception as e:
+         content_logger.error(f"Error saving FileVersion for admin {user_id}: {e}")
+         await callback_query.message.reply_text("💔 Error saving file version to database. Process cancelled.", parse_mode=config.PARSE_MODE)
+         # Critical error saving, clear state
+         await clear_user_state(user_id)
+
+
+    except Exception as e:
+        content_logger.error(f"Error handling content_subtitles_done callback for admin {user_id}: {e}")
+        await callback_query.message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
+        # State is SELECTING_METADATA_SUBTITLES, keep it? Or clear on complex errors?
+        await clear_user_state(user_id) # Clear on complex error
+
+
+#----------------------------------------------------------------------------------------------------
 
 
 # --- Handlers for Selecting a Season from the Seasons List ---
