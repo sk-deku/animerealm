@@ -7,6 +7,10 @@ from typing import Optional, List, Dict, Any
 # Make the database name available for use in this file
 from config import DB_NAME
 
+from database.models import UserState # Import the State model
+from config import DB_NAME # Ensure DB_NAME is available
+
+
 # Configure logger for database operations
 db_logger = logging.getLogger(__name__)
 
@@ -55,7 +59,8 @@ class MongoDB:
             cls._client = None
             cls._db = None
             raise Exception(f"Unexpected error during MongoDB connection: {e}")
-
+        pass # Existing implementation remains
+    
 
     @classmethod
     async def close(cls):
@@ -66,7 +71,8 @@ class MongoDB:
             cls._client = None
             cls._db = None
             db_logger.info("MongoDB connection closed.")
-
+        pass # Existing implementation remains
+        
     @classmethod
     def get_db(cls):
         """Returns the database instance. Raises error if not connected."""
@@ -75,7 +81,8 @@ class MongoDB:
             # Handle this error gracefully in handlers, perhaps asking user to try again or notify admin
             raise ConnectionFailure("MongoDB database is not connected.")
         return cls._db
-
+        pass # Existing implementation remains
+        
     # --- Convenience Methods for Collections ---
 
     @classmethod
@@ -94,6 +101,10 @@ class MongoDB:
     def generated_tokens_collection(cls):
         return cls.get_db()["generated_tokens"]
 
+    @classmethod
+    def states_collection(cls):
+        return cls.get_db()["user_states"] # Use a distinct name for the collection
+        
 # --- Initialization Function to be called from main.py ---
 async def init_db(uri: str):
     """Calls the connect method and optionally sets up indices."""
@@ -154,3 +165,89 @@ async def init_db(uri: str):
     except Exception as e:
          db_logger.critical(f"An error occurred during DB initialization tasks (indices, etc.): {e}")
          # Handle other init failures
+
+
+    # --- State Management Utility Methods ---
+
+    @classmethod
+    async def get_user_state(cls, user_id: int) -> Optional[UserState]:
+        """Retrieves the current state for a user."""
+        state_doc = await cls.states_collection().find_one({"user_id": user_id})
+        if state_doc:
+            try:
+                return UserState(**state_doc)
+            except Exception as e:
+                db_logger.error(f"Error validating user state data from DB for user {user_id}: {e}")
+                # Optionally delete potentially corrupted state? Risky.
+                return None # Indicate corrupted state
+        return None # No state found
+
+
+    @classmethod
+    async def set_user_state(cls, user_id: int, handler: str, step: str, data: Dict[str, Any] = None):
+        """Sets or updates the state for a user."""
+        state_doc = {
+            "user_id": user_id,
+            "handler": handler,
+            "step": step,
+            "data": data if data is not None else {},
+            "updated_at": datetime.now(timezone.utc)
+        }
+        try:
+            # Use upsert=True: if state for this user_id exists, update; otherwise, insert.
+            # Setting upsert=True handles initial creation and subsequent updates.
+            await cls.states_collection().update_one(
+                {"user_id": user_id},
+                {"$set": state_doc, "$setOnInsert": {"created_at": datetime.now(timezone.utc)}},
+                upsert=True
+            )
+            db_logger.debug(f"Set state for user {user_id}: {handler}:{step}")
+        except Exception as e:
+             db_logger.error(f"Failed to set state for user {user_id} ({handler}:{step}): {e}")
+             # Handle failure - potentially critical
+
+    @classmethod
+    async def clear_user_state(cls, user_id: int):
+        """Removes the state for a user."""
+        try:
+            await cls.states_collection().delete_one({"user_id": user_id})
+            db_logger.debug(f"Cleared state for user {user_id}")
+        except Exception as e:
+            db_logger.error(f"Failed to clear state for user {user_id}: {e}")
+            # Log error, maybe inform admin if persistent issue
+
+# --- Initialization Function to be called from main.py ---
+async def init_db(uri: str):
+    """Calls the connect method and optionally sets up indices."""
+    try:
+        # Attempt connection
+        await MongoDB.connect(uri, DB_NAME) # Use DB_NAME from config
+
+        # Optional: Create indices
+        db = MongoDB.get_db()
+
+        db_logger.info("Creating/Ensuring MongoDB indices...")
+        index_coroutines = [
+            # ... existing indices for users, anime, requests, generated_tokens ...
+
+            # New: User State collection index
+            db["user_states"].create_index([("user_id", 1)], unique=True), # Ensure only one state per user
+            db["user_states"].create_index([("handler", 1), ("step", 1)]), # For querying by state
+
+        ]
+        results = await asyncio.gather(*index_coroutines, return_exceptions=True)
+        for i, res in enumerate(results):
+            if isinstance(res, Exception):
+                 db_logger.warning(f"Failed to create index {i}: {res}")
+        db_logger.info("MongoDB indices checked/created.")
+
+    except ConnectionFailure:
+        # Connection failure handled and logged inside connect method
+        db_logger.critical("Database connection failed during initialization.")
+        # Global flag could be set here to indicate DB is down if needed
+
+    except Exception as e:
+         db_logger.critical(f"An error occurred during DB initialization tasks (indices, etc.): {e}")
+         # Handle other init failures
+
+# DB_NAME is imported from config at the top
