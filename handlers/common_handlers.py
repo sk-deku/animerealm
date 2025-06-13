@@ -18,6 +18,7 @@ from strings import (
     TOKEN_ALREADY_REDEEMED, TOKEN_EXPIRED, TOKEN_INVALID # Need these specific failure messages
 )
 from database.mongo_db import MongoDB
+from database.mongo_db import get_user_state, set_user_state, clear_user_state
 from database.models import User # Import the User model
 from handlers.tokens_handler import handle_token_redemption # We will implement this function later
 
@@ -408,42 +409,90 @@ async def profile_command_or_callback(client: Client, update: Union[Message, Cal
            await update.reply_text(ERROR_OCCURRED, parse_mode=PARSE_MODE)
 
 
-# Generic callback handler for unsupported or basic 'answer' callbacks
-# This helps acknowledge button presses that don't have a dedicated handler yet
-@Client.on_callback_query(filters.regex("^menu_|^profile_") & ~filters.regex("^menu_home$|^menu_help$|^menu_profile$|^menu_earn_tokens$|^menu_premium$|^menu_search$|^menu_browse$|^profile_watchlist$")) # Exclude handlers that have dedicated functions
+@Client.on_callback_query(group=-1) # Process after other, specific callback handlers
 async def basic_callback_answer(client: Client, callback_query: CallbackQuery):
-     """Acknowledges button presses that aren't fully handled yet."""
-     # This will prevent the "Loading..." indicator hanging for the user
-     logging.info(f"Acknowledging callback query: {callback_query.data} from user {callback_query.from_user.id}")
-     await callback_query.answer("Feature not fully implemented yet!", show_alert=False) # Show a toast notification
-    
+     """Acknowledges button presses that aren't fully handled or indicates busy/error."""
+     user_id = callback_query.from_user.id
+     data = callback_query.data
 
-# Generic handler for handling any text input that isn't a command or specific input expected by a state
-@Client.on_message(filters.text & filters.private & ~filters.command) # Handles text messages that are NOT commands
+     common_logger.debug(f"Basic callback answer for data: {data} from user {user_id}")
+
+     # Check user state - if user is in a specific input state, this button might be irrelevant
+     user_state = await get_user_state(user_id)
+     if user_state:
+         common_logger.warning(f"User {user_id} in state {user_state.handler}:{user_state.step} clicked unrelated callback data: {data}")
+         await callback_query.answer("You are currently in another process. Finish or type '❌ Cancel' first.", show_alert=True)
+         return # Don't proceed with generic acknowledgement
+
+
+     # Otherwise, provide a default quiet acknowledgement
+     try:
+        await callback_query.answer() # Just a silent acknowledgement toast
+     except Exception as e:
+        common_logger.error(f"Failed to answer basic callback {data} for user {user_id}: {e}")
+
+
+# Generic handler for handling any text input that isn't a command
+@Client.on_message(filters.text & filters.private & ~filters.command, group=1) # Process *before* generic errors, higher group number
 async def handle_plain_text_input(client: Client, message: Message):
     """Handles general plain text input that is not a command."""
     user_id = message.from_user.id
     text = message.text.strip()
+    chat_id = message.chat.id
 
-    # Simple placeholder: If the user types "cancel", treat it as cancelling any ongoing process
+    common_logger.debug(f"Received plain text from user {user_id}: {text}")
+
+
+   # --- Check for cancellation request ---
     if text.lower() == CANCEL_ACTION.lower():
-        logging.info(f"User {user_id} sent cancellation text.")
-        await message.reply_text(ACTION_CANCELLED, parse_mode=PARSE_MODE)
-        # NEED to clear user's current input state!
+        user_state = await get_user_state(user_id)
+        if user_state:
+            await clear_user_state(user_id)
+            await message.reply_text(ACTION_CANCELLED, parse_mode=config.PARSE_MODE)
+            common_logger.info(f"User {user_id} cancelled state {user_state.handler}:{user_state.step}")
+        else:
+             # User sent "cancel" but wasn't in a state
+             await message.reply_text("✅ Nothing to cancel.", parse_mode=config.PARSE_MODE)
+        return # Always stop after handling cancel
+
+    user_state = await get_user_state(user_id)
+
+    # --- Route Input Based on State ---
+    if user_state:
+        common_logger.info(f"User {user_id} in state {user_state.handler}:{user_state.step}. Routing text input.")
+        # Route to the specific handler based on user_state.handler
+        # This routing logic will expand as you implement more handlers
+        if user_state.handler == "content_management":
+             # Example routing - needs implementation in content_handler.py
+             # from . import content_handler # Import content_handler here or at top
+             # await content_handler.handle_content_input(client, message, user_state)
+             await message.reply_text(f"You are currently adding content, state: {user_state.step}. (Handler not fully linked)", parse_mode=config.PARSE_MODE) # Placeholder
+        elif user_state.handler == "request":
+            # Example routing - needs implementation in request_handler.py
+            # from . import request_handler
+            # await request_handler.handle_request_input(client, message, user_state)
+             await message.reply_text(f"You are currently requesting anime, state: {user_state.step}. (Handler not fully linked)", parse_mode=config.PARSE_MODE) # Placeholder
+        # Add elif blocks for other handlers that expect text input
+        else:
+            # Fallback for unexpected state (state exists, but handler not recognized or implemented)
+            common_logger.warning(f"User {user_id} in state {user_state.handler}:{user_state.step} but handler is not recognized. Clearing state.")
+            await clear_user_state(user_id)
+            await message.reply_text("🤷 Unexpected state. Your process was cancelled.", parse_mode=config.PARSE_MODE)
 
 
-    is_user_in_active_state = False # Placeholder state check
-    if not is_user_in_active_state and len(text) > 1: # Basic check, maybe require min length
-        # Assume it's a search query
-        # import search_handler # Import dynamically or have it imported top
-        # await search_handler.handle_search_query_text(client, message, text) # Call the search logic
+    else:
+        # --- No Active State - Treat as Search Query ---
+        common_logger.info(f"User {user_id} has no active state. Treating as search query.")
+        # Check if it seems like a search query (e.g., min length > 1)
+        if len(text) > 1: # Simple check to avoid triggering search on single characters
+             # Route to the search handler
+             # from . import search_handler # Import search_handler here or at top
+             # await search_handler.handle_search_query_text(client, message, text) # Call the search logic
+             await message.reply_text(f"Assuming you want to search for '{text}'... (Search handler not fully integrated)", parse_mode=config.PARSE_MODE) # Placeholder
+        else:
+            # Text too short or not clearly a search/command - maybe a general prompt
+             await message.reply_text("Hmm, I can search for anime or use buttons to guide you. 😊", parse_mode=config.PARSE_MODE)
 
-         # Temporary message until search handler is ready
-         await message.reply_text("Okay, looking for '{text}'...", parse_mode=PARSE_MODE)
-         await message.reply_text(
-              "🔍 Search functionality is not fully integrated yet. Please use buttons for now!",
-              parse_mode=PARSE_MODE
-          )
 
 # Error handler for messages
 @Client.on_message(filters.private, group=-1) # Process errors after other handlers, group=-1 ensures lowest priority
