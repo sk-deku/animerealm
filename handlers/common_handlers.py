@@ -5,9 +5,10 @@ import sys
 from datetime import datetime, timezone
 from typing import Union
 from pyrogram import Client, filters
+from . import content_handler # Ensure content_handler is imported
+from handlers.content_handler import ContentState # Import 
 from pyrogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait, MessageIdInvalid, MessageNotModified
-from . import content_handler
 
 from strings import (
     WELCOME_MESSAGE, HELP_MESSAGE, ABOUT_BOT_MESSAGE, ERROR_OCCURRED,
@@ -533,7 +534,8 @@ async def callback_error_handler(client: Client, callback_query: CallbackQuery):
 # Handler for Photo/Document/other file types when NOT in text input state.
 # This is needed for handling things like admin uploading a poster image or episode files.
 # This handler should check the user's state before proceeding.
-@Client.on_message((filters.photo | filters.document) & filters.private, group=1) # Process files, higher group than default
+
+@Client.on_message((filters.photo | filters.document | filters.video) & filters.private, group=1) # Include filters.video explicitly
 async def handle_file_input(client: Client, message: Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -541,62 +543,32 @@ async def handle_file_input(client: Client, message: Message):
 
     user_state = await get_user_state(user_id)
 
+    # Check if the user is in a content management state that expects a file
     if user_state and user_state.handler == "content_management":
-        # If admin is in content management and in a state expecting a file:
         if user_state.step == ContentState.AWAITING_POSTER:
-             # Assuming we receive a photo for poster
-             if message.photo:
-                  # Process the photo - get the file_id etc.
-                  file_id = message.photo[-1].file_id # Get the highest quality version
-                  anime_name = user_state.data.get("new_anime_name")
+             # Check if it's a photo (we expect photos for posters)
+             await content_handler.handle_awaiting_poster(client, message, user_state)
 
-                  # --- Placeholder for AWAITING_POSTER processing ---
-                  await message.reply_text(f"Received poster image. File ID: `{file_id}`\n\nAnime Name: {anime_name}\n(Processing next step - Synopsis Prompt - not fully linked)", parse_mode=config.PARSE_MODE)
-
-                  # Example next step: Set state to AWAITING_SYNOPSIS and prompt
-                  # await set_user_state(user_id, "content_management", ContentState.AWAITING_SYNOPSIS, data={"new_anime_name": anime_name, "poster_file_id": file_id})
-                  # await content_handler.prompt_for_synopsis(client, chat_id, anime_name) # Need prompt function
-
-
-             else:
-                  # Admin sent a document or something else when expecting a photo poster
-                  await message.reply_text("👆 Please send a **photo** to use as the anime poster, or type '❌ Cancel'.", parse_mode=config.PARSE_MODE)
-                  # State remains AWAITING_POSTER
         elif user_state.step == ContentState.UPLOADING_FILE:
-            # Admin is in the state of uploading an episode file (document or video)
-            if message.document or message.video: # Check for document or video (Pyrogram treats videos sometimes as docs?)
-                 # Process the file - get file_id, size, etc.
-                 file = message.document if message.document else message.video
-                 file_id = file.file_id
-                 file_unique_id = file.file_unique_id
-                 file_name = file.file_name or "Unnamed File"
-                 file_size_bytes = file.file_size
+            # Check if it's a document or video (expected for episode files)
+            # Placeholder call - need to implement this helper in content_handler
+            # await content_handler.handle_episode_file_upload(client, message, user_state)
+             if message.document or message.video:
+                 await message.reply_text("File received for episode, routing for metadata... (File upload processing not fully linked)", parse_mode=config.PARSE_MODE) # Temp message
+             else:
+                 # Received non-file media or something else when expecting an episode file
+                 await message.reply_text("⬆️ Please upload the episode file (video or document), or type '❌ Cancel'.", parse_mode=config.PARSE_MODE)
+                 # State remains UPLOADING_FILE
 
-                 # Need to route this to a specific content handler function that expects file upload
-                 # Example: content_handler.handle_episode_file_upload(client, message, user_state, file_details)
-                 await message.reply_text(f"Received file for episode. File ID: `{file_id}`\n\nProcessing next step - Metadata selection (not fully linked)", parse_mode=config.PARSE_MODE)
-
-                 # Example next step: Set state for metadata selection, store temp file data in state
-                 # user_state.data["temp_file"] = {"file_id": file_id, "file_size": file_size_bytes, ...}
-                 # await set_user_state(user_id, "content_management", ContentState.SELECTING_METADATA_QUALITY, data=user_state.data)
-                 # await content_handler.prompt_for_metadata_quality(client, chat_id) # Need prompt function
-
-            else:
-                # Admin sent text or other media when expecting episode file
-                await message.reply_text("⬆️ Please upload the episode file (video or document), or type '❌ Cancel'.", parse_mode=config.PARSE_MODE)
-                # State remains UPLOADING_FILE
         else:
             # Received a file, but in a content management state that doesn't expect a file right now
              common_logger.warning(f"Admin {user_id} sent file input while in content management state {user_state.step}, which does not expect a file.")
              await message.reply_text("🤷 I'm not expecting a file right now based on your current action.", parse_mode=config.PARSE_MODE)
+             # State remains the same, unless specific handler logic changes it
+
 
     else:
-        # User not in any active state, and sent a file. Ignore or provide a default response.
-        # Default is likely to just ignore it or say "Send /help"
+        # User not in any active state, and sent a file. Ignore.
         common_logger.debug(f"Ignoring file input from user {user_id} not in active state.")
-        pass # Ignore
-
-
-# --- Uncomment handlers/__init__.py import ---
-# Edit handlers/__init__.py and uncomment:
-# from . import content_handler
+        # You could optionally add a response here, like "I don't know what to do with files when you're not in a command."
+        pass
