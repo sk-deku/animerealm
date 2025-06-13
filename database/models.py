@@ -1,8 +1,8 @@
 # database/models.py
 from typing import List, Optional, Dict, Any
-from datetime import datetime
 from pydantic import BaseModel, Field, root_validator
 from bson import ObjectId # For working with MongoDB ObjectIds
+from datetime import datetime, timezone # Use timezone aware datetime
 
 # --- Custom ObjectId handling for Pydantic ---
 # Allows Pydantic to validate and serialize MongoDB ObjectIds
@@ -84,7 +84,6 @@ class Anime(BaseModel):
         json_encoders = {ObjectId: str} # How to encode ObjectId when converting to JSON/Dict
 
 
-# Model for User entry
 class User(BaseModel):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     user_id: int # Telegram User ID
@@ -96,9 +95,9 @@ class User(BaseModel):
     watchlist: List[PyObjectId] = Field(default=[]) # List of Anime _id s
     download_count: int = 0 # Total files downloaded by this user
     is_banned: bool = False
-    join_date: datetime = Field(default_factory=datetime.utcnow)
-    notification_settings: Dict[str, bool] # See DEFAULT_NOTIFICATION_SETTINGS in config
-
+    join_date: datetime = Field(default_factory=lambda: datetime.now(timezone.utc)) # Use timezone aware datetime by default
+    notification_settings: Dict[str, bool] # MUST be provided, no default set here directly
+                                         # Defaults come from config and handler creation logic
 
     class Config:
         json_encoders = {ObjectId: str}
