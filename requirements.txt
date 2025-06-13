@@ -1,11 +1,11 @@
 pyrogram[listen]==2.0.* # Using listen feature for updates
-pymongo
+pymongo[srv]==3.12.3
 python-dotenv
 fuzzywuzzy[speedup]==0.18.* # Using speedup version for Levenshtein
 python-Levenshtein
 dnspython # For MongoDB Atlas
 Pillow # Optional, if image processing is needed (e.g., welcome image resize)
 requests # Sometimes needed for shortener APIs or external interactions
-aiohttp # Recommended for async HTTP requests, good for APIs or shorteners
-Flask
-gunicorn
+aiohttp==3.8.1
+Flask==2.2.2
+gunicorn==20.1.0
