@@ -41,7 +41,6 @@ Last Updated: [Date]
 """
 
 ERROR_OCCURRED = "💔 Oops! An unexpected error occurred. We've been notified and will fix it soon. Please try again later."
-NO_ANIME_FOUND_SEARCH = "😔 Couldn't find any anime matching `{query}`. Maybe try a different spelling? Or... <blockquote><b>💡 Would you like to request this anime?</b></blockquote>"
 
 # --- Callback Button Labels ---
 BUTTON_SEARCH = "🔍 Search Anime"
@@ -191,13 +190,20 @@ PREMIUM_INFO_HEADER = """
 Become a Premium member and enjoy:
 """ # Features are listed after this
 PREMIUM_PLAN_FORMAT = """
-**__🌟 {plan_name}__**
+**__🌟 Platinum__**
 💸 **__Price__**: {price}
 ⏳ **__Duration__**: {duration} days
 🎉 **__Benefits__**:
-{features}
+#{features}
+✅ Unlimited Anime Downloads  
+🚫 No Ads / Shortlinks  
+📺 Early Access to New Episodes  
+⚡ Faster Download Speeds  
+🎞️ Exclusive Premium-Only Content  
+🔒 Priority Support & Requests  
+🧠 Smart Search Access
 
-➡️ {description}
+➡️ Contact Admin @sk_deku_bot
 """ # Format for each plan in the list
 
 PREMIUM_PURCHASE_INSTRUCTIONS = """
@@ -209,8 +215,28 @@ For manual activation or questions, contact an admin!
 """
 
 # --- Request Handlers ---
-REQUEST_PROMPT = "🙏 **__Anime Request__** 🙏\n\nPlease send me the **exact name** of the anime you'd like to request:"
-REQUEST_RECEIVED_USER_CONFIRM = "✅ Your request for '**{anime_name}**' has been sent to the admins! We'll review it shortly."
+REQUEST_PROMPT_FREE = """
+🙏 **__Anime Request__** 🙏\n\nPlease send me the **exact name** of the anime you'd like to request:
+
+⚠️ Note for Free Users: Making a request will cost you **{request_token_cost} download token(s)**. You currently have **{user_tokens}** tokens.
+
+Continue by sending the anime name, or type `**__❌ Cancel__**` to abort.
+"""
+
+REQUEST_PROMPT_PREMIUM = """
+🙏 **__Anime Request__** 🙏\n\nPlease send me the **exact name** of the anime you'd like to request:
+
+✨ **__Premium Perk:__** You can request anime for **FREE** as a Premium user!
+
+Continue by sending the anime name, or type `**__❌ Cancel__**` to abort.
+"""
+
+REQUEST_NOT_ENOUGH_TOKENS = "😟 Sorry, you need **{request_token_cost}** token(s) to make a request, but you only have **{user_tokens}**. \n\nEarn more tokens using the /gen_token command before making a request."
+
+REQUEST_RECEIVED_USER_CONFIRM_FREE = "✅ Your request for '**{anime_name}**' has been sent to the admins! \n\n💰 **{request_token_cost} token(s)** have been deducted from your balance. You now have **{user_tokens}** tokens."
+
+REQUEST_RECEIVED_USER_CONFIRM_PREMIUM = "✅ Your request for '**{anime_name}**' has been sent to the admins! \n\n✨ Thanks to your Premium status, this request was **FREE**!"
+
 REQUEST_NOTIFICATION_ADMIN = "📥 **__NEW ANIME REQUEST__**\n\nRequester: [{user_name}](tg://user?id={user_id})\nAnime: **{anime_name}**"
 ADMIN_REQUEST_OPTIONS_TITLE = "Reply with one of the options below:"
 BUTTON_REQ_UNAVAILABLE = "❌ Unavailable"
@@ -218,8 +244,11 @@ BUTTON_REQ_ALREADY_ADDED = "✅ Already Added"
 BUTTON_REQ_NOT_RELEASED = "⏳ Not Yet Released"
 BUTTON_REQ_WILL_ADD_SOON = "✨ Will Add Soon" # Optional
 REQUEST_ADMIN_REPLY_SENT = "➡️ Your response ('{response}') has been sent to [{user_name}](tg://user?id={user_id})."
-USER_REQUEST_RESPONSE = "📣 Update on your request for '**{anime_name}**':\n<blockquote>{admin_response}</blockquote>"
-REQUEST_ONLY_PREMIUM = "The `/request` command is only available to **Premium users**. ✨ However, if you search for an anime and we don't find it, you'll see an option to request it then!"
+
+REQUEST_SEARCH_NO_RESULTS_PROMPT = "😔 Couldn't find any anime matching `{query}`. Maybe try a different spelling?" # Added onto the search no results message
+BUTTON_REQUEST_FROM_SEARCH_FREE = "👇 Request \"{query}\" ({cost} Tokens)" # Button for requesting from no search result, showing cost
+BUTTON_REQUEST_FROM_SEARCH_PREMIUM = "👇 Request \"{query}\" (FREE)" # Button for requesting from no search result, for premium
+
 
 # --- Admin Content Management Handlers ---
 MANAGE_CONTENT_TITLE = "🛠️ __**Admin Content Management**__ 🛠️"
@@ -268,13 +297,38 @@ RELEASE_DATE_SET_SUCCESS = "✅ Release date for EP{episode_number:02d} set to {
 INVALID_DATE_FORMAT = "🚫 Invalid date format. Please send in DD/MM/YYYY."
 
 ADD_FILE_PROMPT = "📥 Send the **__Episode File__** (video or compressed) for EP{episode_number:02d} ({anime_name} - Season {season_number}):"
-ADD_FILE_METADATA_PROMPT = "💾 File received! Now send the details:\n\n📺 **Quality/Resolution** (e.g., 1080p, 720p):\n🎧 **Audio Languages** (comma-separated, e.g., Japanese, English):\n📝 **Subtitle Languages** (comma-separated, e.g., English, Spanish, None):" # Prompt for metadata after file
 
 BUTTON_ADD_OTHER_VERSION = "➕ Add Another Version for EP{episode_number:02d}"
 BUTTON_NEXT_EPISODE = "➡️ Go to Next Episode ({next_episode_number:02d})"
 BUTTON_DELETE_FILE_VERSION = "🗑️ Delete This File Version"
 FILE_ADDED_SUCCESS = "✅ File version added for EP{episode_number:02d} ({quality} - {audio}/{subs})!"
 FILE_DELETED_SUCCESS = "🗑️ File version deleted successfully."
+
+
+ADD_FILE_METADATA_PROMPT_BUTTONS = """
+💾 File received! Please select the details using the buttons below or type if not listed:
+
+👇 **__Select Quality/Resolution:__**
+""" # Prompt before displaying quality buttons
+
+PROMPT_AUDIO_LANGUAGES_BUTTONS = "🎧 **__Select Audio Language(s):__** (Click to toggle, Done when finished)"
+PROMPT_SUBTITLE_LANGUAGES_BUTTONS = "📝 **__Select Subtitle Language(s):__** (Click to toggle, Done when finished)"
+
+BUTTON_METADATA_DONE_SELECTING = "✅ Done Selecting {metadata_type}" # metadata_type like Quality, Audio, Subtitles
+
+# --- Callback Button Text for Metadata Selection (Will be generated dynamically based on presets) ---
+# The button text will likely just be the metadata option itself (e.g., "1080p", "Japanese")
+# However, when selected for multiple-choice (Audio/Subs), the button might update
+# to show the selection state, e.g., "✅ English" or "🎧 English"
+# We'll handle the dynamic text formatting in the code, not strings.py
+
+
+# --- Utility Buttons/States for multi-select ---
+BUTTON_DONE = "✅ Done" # Generic Done button text
+BUTTON_SELECT = "Select" # Generic Select button text
+BUTTON_UNSELECT = "✅ Selected" # Generic Unselect button state
+
+
 
 
 # --- Admin Utility Handlers ---
