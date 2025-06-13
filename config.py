@@ -29,10 +29,14 @@ TOKENS_PER_REDEEM = 1 # Can be overridden by .env, but good default
 # URL Shortener configuration - Load from .env for sensitive info, provide structure here
 SHORTENER_API_URL = os.getenv("SHORTENER_SITE_URL") # e.g., "api.example.com"
 SHORTENER_API_KEY = os.getenv("SHORTENER_API_KEY") # e.g., "YOUR_API_KEY"
+SHORTENER_ENDPOINT = "https://{shortener_api_url}/api?api={api_key}&url={long_url}"
+
 # Pattern for the redeem link URL - Use a placeholder for the token
-REDEEM_LINK_PATTERN = "https://t.me/{bot_username}?start={token}"
+REDEEM_LINK_PATTERN_TELEGRAM = "https://t.me/{bot_username}?start={token}"
+
 # Expiry time for generated token links in hours
 TOKEN_LINK_EXPIRY_HOURS = 1 # Can be overridden by .env, but good default
+HOW_TO_EARN_TUTORIAL_LINK = None 
 
 # --- Premium Configuration ---
 # Dictionary defining premium plans: {plan_id: {details}}
