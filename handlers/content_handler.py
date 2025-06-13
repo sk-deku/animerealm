@@ -3609,7 +3609,11 @@ async def handle_subtitles_done_callback(client: Client, callback_query: Callbac
 
 # --- Implement File Version Deletion Workflow (Selection and Confirmation) ---
 
-# Callback to trigger the file version selection menu for deletion
+# handlers/content_handler.py (File Version Deletion Finalization)
+# ... (previous imports and code in content_handler.py) ...
+
+
+# Callback to trigger the file version selection menu for deletion (Continued)
 # Catches callbacks content_delete_file_version_select|<anime_id>|<season>|<ep>
 @Client.on_callback_query(filters.regex(f"^content_delete_file_version_select{config.CALLBACK_DATA_SEPARATOR}.*{config.CALLBACK_DATA_SEPARATOR}.*{config.CALLBACK_DATA_SEPARATOR}.*") & filters.private)
 async def handle_delete_file_version_select_callback(client: Client, callback_query: CallbackQuery):
@@ -3620,57 +3624,62 @@ async def handle_delete_file_version_select_callback(client: Client, callback_qu
     data = callback_query.data # content_delete_file_version_select|<anime_id>|<season>|<ep>
 
     if user_id not in config.ADMIN_IDS: await client.answer_callback_query(message.id, "🚫 Unauthorized."); return
-    try: await client.answer_callback_query(message.id, "Select file version to remove...") # Answer immediately
+    try: await client.answer_callback_query(message.id, "Select file version to remove...")
     except Exception: pass
 
     user_state = await get_user_state(user_id)
-    # State should be MANAGING_EPISODE_MENU when clicking this button
+    # State should be MANAGING_EPISODE_MENU
     if not (user_state and user_state.handler == "content_management" and user_state.step == ContentState.MANAGING_EPISODE_MENU):
-         content_logger.warning(f"Admin {user_id} in unexpected state {user_state.handler}:{user_state.step} clicking delete file select. Data: {data}. State: {user_state}")
+         content_logger.warning(f"Admin {user_id} in unexpected state {user_state.handler}:{user_state.step} clicking delete file select. Data: {data}")
          await edit_or_send_message(client, chat_id, message_id, "🔄 Invalid state for selecting file version to remove.", disable_web_page_preview=True)
-         await clear_user_state(user_id); await manage_content_command(client, callback_query.message); return # Offer to restart CM
+         await clear_user_state(user_id); await manage_content_command(client, callback_query.message); return
 
 
     try:
         # Parse context from callback data
         parts = data.split(config.CALLBACK_DATA_SEPARATOR)
-        if len(parts) != 4: raise ValueError("Invalid callback data format for deleting file version.")
+        if len(parts) != 4: raise ValueError("Invalid callback data format for deleting file version selection.")
         anime_id_str = parts[1]
         season_number = int(parts[2])
         episode_number = int(parts[3])
 
-         # Ensure callback data matches state context as safety
+         # Ensure callback data matches state context
         if user_state.data.get("anime_id") != anime_id_str or user_state.data.get("season_number") != season_number or user_state.data.get("episode_number") != episode_number:
              content_logger.warning(f"Admin {user_id} state data mismatch for delete file select: {user_state.data} vs callback {data}. Updating state data.")
              user_state.data.update({"anime_id": anime_id_str, "season_number": season_number, "episode_number": episode_number})
-             await set_user_state(user_id, user_state.handler, user_state.step, data=user_state.data)
+             await set_user_state(user_id, user_state.handler, user_state.step, data=user_state.data) # Save updated state data
 
 
-        # Fetch the specific episode to get its file versions
-        # Project name and the specific season and episode data including files array
+        # Fetch the specific episode document to get its file versions
+        # Need to filter anime by ID, then season by number, then episode by number
+        # Projection to get only the file versions array from that specific episode
         filter_query = {"_id": ObjectId(anime_id_str)}
+        # Using $elemMatch and dot notation to target the specific episode within its season within the anime
+        # Projecting specifically the files array and maybe anime name for context
         projection = {
             "name": 1,
-            "seasons": { # Project within seasons
-                 "$elemMatch": { # Find the season matching number
-                      "season_number": season_number,
-                       "episodes": { # Project within episodes array of this season
-                            "$elemMatch": { # Find the episode matching number
-                                "episode_number": episode_number
-                            }
-                       }
-                  }
-             }
+             "seasons": {
+                  "$elemMatch": { # Find the season
+                       "season_number": season_number,
+                       "episodes": { # Find the episode within the season
+                            "$elemMatch": {
+                                "episode_number": episode_number,
+                                "files": 1 # Project the files array for this specific episode
+                                # If episode_count_declared or release_date is also needed here, add them: "episode_count_declared":1, "release_date":1
+                           }
+                      }
+                 }
+            }
          }
-
 
         anime_doc = await MongoDB.anime_collection().find_one(filter_query, projection)
 
-        # Check if anime, season, and episode are found
+
+        # Validate if anime/season/episode found and files list exists
         if not anime_doc or not anime_doc.get("seasons") or not anime_doc["seasons"][0] or not anime_doc["seasons"][0].get("episodes") or not anime_doc["seasons"][0]["episodes"][0]:
-             content_logger.error(f"Anime/Season/Episode not found for deleting file version {anime_id_str}/S{season_number}E{episode_number} for admin {user_id} after state check.")
-             await edit_or_send_message(client, chat_id, message_id, "💔 Error: Episode not found for file version deletion.", disable_web_page_preview=True)
-             # Go back to episodes list for safety.
+             content_logger.error(f"Anime/Season/Episode not found for deleting file version {anime_id_str}/S{season_number}E{episode_number} for admin {user_id}. Or no episodes array/data.")
+             await edit_or_send_message(client, chat_id, message_id, "💔 Error: Episode not found or no files available for deletion.", disable_web_page_preview=True)
+             # Go back to episodes list for safety
              filter_query_season = {"_id": ObjectId(anime_id_str), "seasons.season_number": season_number}
              projection_season_episodes = {"name": 1, "seasons.$": 1}
              anime_doc_season = await MongoDB.anime_collection().find_one(filter_query_season, projection_season_episodes)
@@ -3680,122 +3689,124 @@ async def handle_delete_file_version_select_callback(client: Client, callback_qu
                   # Set state back to episodes list
                   await set_user_state(user_id, "content_management", ContentState.MANAGING_EPISODES_LIST, data={"anime_id": anime_id_str, "season_number": season_number, "anime_name": anime_doc_season.get("name", "Anime")})
 
-                  await display_episodes_management_list(client, callback_query.message, anime_id_str, anime_doc_season.get("name", "Anime"), season_number, episodes_list)
+                  await display_episodes_management_list(client, callback_query.message, anime_id_str, anime_doc_season.get("name", "Anime Name"), season_number, episodes_list)
              else:
-                 content_logger.error(f"Failed to fetch anime/season after episode not found for file delete selection for admin {user_id}. Cannot re-display list.")
+                 content_logger.error(f"Failed to fetch anime/season after episode not found for file delete for admin {user_id}. Cannot re-display list.")
                  await edit_or_send_message(client, chat_id, message_id, "💔 Error loading episode list.", disable_web_page_preview=True)
-                 await clear_user_state(user_id); await manage_content_command(client, callback_query.message); return # Fallback
-
-             return # Stop execution
-
-
-        anime_name = anime_doc.get("name", "Anime Name Unknown")
-        # The episode document is nested. Access it carefully.
-        # Use a generator expression and next() to find the specific episode document based on the final $elemMatch path result
-        # anime_doc['seasons'] is [<matched season>], then season_doc['episodes'] is [<matched episode>] based on filter projection structure.
-        season_data = anime_doc["seasons"][0] # The matched season document
-        episode_data = season_data.get("episodes", [])[0] # The matched episode document within the season's episodes array
-
-        files = episode_data.get("files", []) # Get the list of file version dictionaries
-
-        if not files:
-             content_logger.warning(f"Admin {user_id} attempted to delete file version but no files found for {anime_id_str}/S{season_number}E{episode_number}. Data: {episode_data}")
-             await edit_or_send_message(client, chat_id, message_id, "🤔 No file versions found for this episode to remove.", disable_web_page_preview=True)
-             # State is MANAGING_EPISODE_MENU. Can return there. Re-display the episode menu.
-             await display_episode_management_menu(client, callback_query.message, anime_name, season_number, episode_number, episode_data) # Pass current episode data
-
+                 await clear_user_state(user_id); await manage_content_command(client, callback_query.message); # Fallback
 
              return # Stop
 
+        anime_name = anime_doc.get("name", "Anime Name Unknown")
+        # Access the specific episode document from the nested projection results
+        # The result of $elemMatch on two levels creates a complex nested structure
+        # The structure will be like: {"_id":..., "name":..., "seasons": [{"season_number": ..., "episodes": [{"episode_number":..., "files":[...]}]}]}
+        # Need to navigate this to get the files list.
+        # Safety: Ensure 'seasons' and 'episodes' exist at the projected paths.
+        try:
+             episode_data_proj = anime_doc["seasons"][0]["episodes"][0] # The deeply nested episode doc with files projected
+             files = episode_data_proj.get("files", []) # Get the list of file version dicts from *that* episode
+        except (KeyError, IndexError) as e:
+            content_logger.error(f"Error accessing deeply nested files list in projected document for {anime_id_str}/S{season_number}E{episode_number} for admin {user_id}: {e}. Doc: {anime_doc}", exc_info=True)
+            await edit_or_send_message(client, chat_id, message_id, "💔 Error accessing file data. Cannot display versions for deletion.", disable_web_page_preview=True)
+            # Go back to episode menu, state should be ManagingEpisodeMenu
+            # Need to refetch episode data for display_episode_management_menu
+            # content_manage_episode|<anime_id>|<season>|<ep> callback has logic to fetch and display episode menu.
+            await handle_select_episode_callback(client, callback_query.message, user_state, f"content_manage_episode{config.CALLBACK_DATA_SEPARATOR}{anime_id_str}{config.CALLBACK_DATA_SEPARATOR}{season_number}{config.CALLBACK_DATA_SEPARATOR}{episode_number}")
 
-        # --- Transition to SELECT_FILE_VERSION_TO_DELETE State ---
-        # Set state to SELECT_FILE_VERSION_TO_DELETE, storing episode context and file versions list.
-        # Store episode data in state so we can return to the correct menu/data easily after deletion.
+            return # Stop
+
+
+        if not files:
+            content_logger.warning(f"Admin {user_id} attempted to delete file version but no files found for {anime_id_str}/S{season_number}E{episode_number}. Displayed selection anyway.")
+            await edit_or_send_message(client, chat_id, message_id, "🤔 No file versions found for this episode to remove.", disable_web_page_preview=True)
+            # State is MANAGING_EPISODE_MENU. Can leave them here.
+            # Re-display the episode menu might be better to show current state accurately.
+            # Need to refetch episode data again
+            # handle_select_episode_callback(client, callback_query.message, user_state, f"content_manage_episode{config.CALLBACK_DATA_SEPARATOR}{anime_id_str}{config.CALLBACK_DATA_SEPARATOR}{season_number}{config.CALLBACK_DATA_SEPARATOR}{episode_number}")
+
+            return # Stop
+
+
+        # --- Transition to Selecting File Version to Delete State ---
+        # Set state to SELECT_FILE_VERSION_TO_DELETE, storing episode context and the files list for display
         await set_user_state(
              user_id,
              "content_management",
              ContentState.SELECT_FILE_VERSION_TO_DELETE,
              data={
-                 "anime_id": anime_id_str,
-                 "season_number": season_number,
-                 "episode_number": episode_number,
-                 "anime_name": anime_name,
-                 # No need to store 'files' list in state data unless navigating between select/confirm multiple times.
-                 # Re-fetch files on confirmation based on context IDs. Saves state data size.
+                 **user_state.data, # Preserve existing context (anime_id, season, episode, name)
+                 "file_versions": files # Store the list of file version dictionaries
              }
         )
 
-
-        menu_text = f"🗑️ <b><u>Delete File Version</u></b> 🗑️\n\nSelect the version you want to **<u>permanently remove</u>** for <b>{anime_name}</b> - S<b>__{season_number}__</b>E<b>__{episode_number:02d}__</b>:\n\n<b>THIS CANNOT BE UNDONE.</b>"
+        menu_text = f"🗑️ <b><u>Delete File Version</u></b> 🗑️\n\nSelect the version you want to **<u>permanently remove</u>** for <b>{anime_name}</b> - S<b>__{season_number}__</b>E<b>__{episode_number:02d}__</b>:"
         buttons = []
 
-        # Create buttons for each file version allowing selection for removal.
-        # Data for button: content_confirm_remove_file_version|<anime_id>|<season>|<ep>|<file_unique_id>
+        # Create buttons for each file version using details from the 'files' list stored in state data
+        # These buttons will trigger the confirmation handler directly
         for i, file_ver_dict in enumerate(files):
-            # Safely access data with defaults
+            # Access dictionary keys safely
             quality = file_ver_dict.get('quality_resolution', 'Unknown Quality')
             size_bytes = file_ver_dict.get('file_size_bytes', 0)
             audio_langs = file_ver_dict.get('audio_languages', [])
             subs_langs = file_ver_dict.get('subtitle_languages', [])
             file_unique_id = file_ver_dict.get('file_unique_id', None)
 
+            # Cannot create a delete button if file_unique_id is missing - data inconsistency!
             if file_unique_id is None:
-                content_logger.error(f"File version document missing file_unique_id in DB for {anime_id_str}/S{season_number}E{episode_number} index {i}. Cannot create delete button for this entry. Data: {file_ver_dict}")
-                # Optionally inform admin about corrupted data entry.
+                content_logger.error(f"File version dictionary in DB/state missing file_unique_id for {anime_id_str}/S{season_number}E{episode_number} index {i}. Skipping button.")
                 continue # Skip this entry
 
 
-            # Format button label
+            # Format button label: "❌ Quality (Size) Audio / Subs"
             formatted_size = f"{size_bytes / (1024 * 1024):.2f} MB" if size_bytes > 0 else "0 MB"
             if size_bytes >= 1024 * 1024 * 1024: formatted_size = f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
             audio_str = ', '.join(audio_langs) if audio_langs else 'N/A'
             subs_str = ', '.join(subs_langs) if subs_langs else 'None'
 
-            button_label = f"❌ {quality} ({formatted_size}) | Audio: {audio_str} | Subs: {subs_str}"
+            button_label = f"❌ {quality} ({formatted_size}) 🎧 {audio_str} 📝 {subs_str}"
 
-            # Callback data: content_confirm_remove_file_version|<anime_id>|<season>|<ep>|<file_unique_id>
-            callback_data = f"content_confirm_remove_file_version{config.CALLBACK_DATA_SEPARATOR}{anime_id_str}{config.CALLBACK_DATA_SEPARATOR}{season_number}{config.CALLBACK_DATA_SEPARATOR}{episode_number}{config.CALLBACK_DATA_SEPARATOR}{file_unique_id}"
-            buttons.append([InlineKeyboardButton(button_label, callback_data=callback_data)])
+            # Callback data for final confirmation: content_confirm_remove_file_version|<anime_id>|<season>|<ep>|<file_unique_id>
+            buttons.append([InlineKeyboardButton(button_label, callback_data=f"content_confirm_remove_file_version{config.CALLBACK_DATA_SEPARATOR}{anime_id_str}{config.CALLBACK_DATA_SEPARATOR}{season_number}{config.CALLBACK_DATA_SEPARATOR}{episode_number}{config.CALLBACK_DATA_SEPARATOR}{file_unique_id}")])
 
 
-        # Add Back button to episode management menu (routes back to MANAGING_EPISODE_MENU state display)
-        # Need full episode context to display the menu
-        # Pass the original episode data Dict here so the display function has it
-        # content_manage_episode handler can reconstruct display. Or pass needed context via state.
-        # Callback: content_manage_episode|<anime_id>|<season_number>|<episode_number> - Same as original button to get here
-        back_button_callback = f"content_manage_episode{config.CALLBACK_DATA_SEPARATOR}{anime_id_str}{config.CALLBACK_DATA_SEPARATOR}{season_number}{config.CALLBACK_DATA_SEPARATOR}{episode_number}"
-        buttons.append([InlineKeyboardButton(strings.BUTTON_BACK, callback_data=back_button_callback)])
-
+        # Add Back button to episode management menu (Returns to the specific episode's options menu)
+        buttons.append([InlineKeyboardButton(strings.BUTTON_BACK, callback_data=f"content_manage_episode{config.CALLBACK_DATA_SEPARATOR}{anime_id_str}{config.CALLBACK_DATA_SEPARATOR}{season_number}{config.CALLBACK_DATA_SEPARATOR}{episode_number}")])
         # Add other navigation buttons if needed (CM main, Home)
-        buttons.append([InlineKeyboardButton(strings.BUTTON_HOME_ADMIN_MENU, callback_data="content_management_main_menu")])
-        buttons.append([InlineKeyboardButton(strings.BUTTON_HOME, callback_data="menu_home")])
 
         reply_markup = InlineKeyboardMarkup(buttons)
 
-        # Edit the episode management menu message to display file selection for deletion.
+
+        # Edit the episode management menu message to display file version selection for deletion.
         await edit_or_send_message(
              client, chat_id, message_id, menu_text, reply_markup, disable_web_page_preview=True
          )
 
 
+    except ValueError:
+         content_logger.warning(f"Admin {user_id} invalid callback data format for delete file version select: {data}")
+         await edit_or_send_message(client, chat_id, message_id, "🚫 Invalid data in callback.", disable_web_page_preview=True)
+         # State is MANAGING_EPISODE_MENU. Let admin retry clicking.
+
     except Exception as e:
         content_logger.error(f"FATAL error handling content_delete_file_version_select callback {data} for admin {user_id}: {e}", exc_info=True)
         await clear_user_state(user_id)
         await edit_or_send_message(client, chat_id, message_id, ERROR_OCCURRED, disable_web_page_preview=True)
-        await manage_content_command(client, callback_query.message) # Offer to restart CM
+        await manage_content_command(client, callback_query.message); # Offer to restart CM
 
-# Callback to confirm deletion of a specific file version
+# Callback for final confirmation of file version removal
 # Catches callbacks content_confirm_remove_file_version|<anime_id>|<season>|<ep>|<file_unique_id>
 @Client.on_callback_query(filters.regex(f"^content_confirm_remove_file_version{config.CALLBACK_DATA_SEPARATOR}.*{config.CALLBACK_DATA_SEPARATOR}.*{config.CALLBACK_DATA_SEPARATOR}.*{config.CALLBACK_DATA_SEPARATOR}.*") & filters.private)
 async def handle_confirm_remove_file_version_callback(client: Client, callback_query: CallbackQuery):
-    """Handles admin clicking a specific file version button to permanently remove it."""
+    """Handles admin confirming a specific file version removal."""
     user_id = callback_query.from_user.id
     chat_id = callback_query.message.chat.id
-    message_id = callback_query.message.id # Message with version buttons
+    message_id = callback_query.message.id
     data = callback_query.data # content_confirm_remove_file_version|<anime_id>|<season>|<ep>|<file_unique_id>
 
     if user_id not in config.ADMIN_IDS: await client.answer_callback_query(message.id, "🚫 Unauthorized."); return
-    try: await client.answer_callback_query(message.id, "Removing file version permanently...")
+    try: await client.answer_callback_query(message.id, "Removing file version permanently...") # Indicate ongoing process
     except Exception: pass
 
 
@@ -3808,93 +3819,176 @@ async def handle_confirm_remove_file_version_callback(client: Client, callback_q
 
 
     try:
-        # Parse context including file_unique_id from callback data
+        # Parse context from callback data
         parts = data.split(config.CALLBACK_DATA_SEPARATOR)
         if len(parts) != 5: raise ValueError("Invalid callback data format for confirming file version removal.")
         anime_id_str = parts[1]
         season_number = int(parts[2])
         episode_number = int(parts[3])
-        file_unique_id_to_remove = parts[4] # The unique identifier of the file version
+        file_unique_id_to_remove = parts[4] # The unique identifier for the file version
 
-
-        # Ensure context data matches state context (check anime/season/ep ID) as safety
+         # Ensure callback data matches state context as safety
         if user_state.data.get("anime_id") != anime_id_str or user_state.data.get("season_number") != season_number or user_state.data.get("episode_number") != episode_number:
              content_logger.warning(f"Admin {user_id} state data mismatch for final remove file version: {user_state.data} vs callback {data}. Data mismatch!")
              # Treat mismatch as error, clear state
              await edit_or_send_message(client, chat_id, message_id, "💔 Data mismatch. Process cancelled.", disable_web_page_preview=True)
              await clear_user_state(user_id); return # Clear broken state
 
-
         content_logger.info(f"Admin {user_id} confirming remove file version {file_unique_id_to_remove} from {anime_id_str}/S{season_number}E{episode_number}.")
 
-
-        # --- Perform the database update: remove the specific file version ---
-        # Use MongoDB class method to handle the complex nested array $pull update
+        # --- Perform the database update: remove the file version ---
+        # Use $pull operator on the nested files array, targeting the element by its unique_id
         success = await MongoDB.delete_file_version_from_episode(
             anime_id=anime_id_str,
             season_number=season_number,
             episode_number=episode_number,
-            file_unique_id=file_unique_id_to_remove # Match by unique ID
+            file_unique_id=file_unique_id_to_remove
         )
 
-        if success:
-             # File version successfully removed
-             content_logger.info(f"Admin {user_id} successfully removed file version {file_unique_id_to_remove}.")
-             # Edit the message to confirm removal
-             await edit_or_send_message(client, chat_id, message_id, f"✅ Permanently removed file version.", disable_web_page_preview=True)
 
+        if success:
+             content_logger.info(f"Admin {user_id} successfully removed file version {file_unique_id_to_remove} from {anime_id_str}/S{season_number}E{episode_number}.")
+             await edit_or_send_message(client, chat_id, message_id, strings.FILE_DELETED_SUCCESS, disable_web_page_preview=True)
 
              # --- Transition back to the episode management menu ---
-             # Clear the SELECT_FILE_VERSION_TO_DELETE state
-             # Set state back to MANAGING_EPISODE_MENU for this episode, preserving context.
-             # Preserve necessary context including anime_id, season_number, episode_number, anime_name
+             # Need to fetch the updated episode data (files list should be smaller now)
+             # Clear the SELECT_FILE_VERSION_TO_DELETE state and any specific file data in state
+             # Preserve original episode context in state
+             updated_state_data = {k: v for k,v in user_state.data.items() if k not in ["file_versions"]} # Remove the list of file versions
+
              await set_user_state(
                   user_id,
                   "content_management",
-                  ContentState.MANAGING_EPISODE_MENU,
-                  data={k: v for k,v in user_state.data.items() if k != "file_versions"} # Clean state data, file_versions not needed anymore
+                  ContentState.MANAGING_EPISODE_MENU, # Back to episode options state
+                  data={**updated_state_data}
               )
 
-             # Fetch the *updated* episode data (its file versions list will be shorter) and redisplay the episode menu
-             # Use efficient fetch of episode context and content
-             filter_query_episode = {"_id": ObjectId(anime_id_str), "seasons.season_number": season_number, "seasons.0.episodes.episode_number": episode_number}
-             projection_episode = {"name": 1, "seasons.$": 1}
 
-             anime_doc = await MongoDB.anime_collection().find_one(filter_query_episode, projection_episode)
+             # Fetch the specific episode's current data from DB to re-display the menu.
+             filter_query = {"_id": ObjectId(anime_id_str), "seasons.season_number": season_number}
+             projection = {"name": 1, "seasons.$": 1} # Project name and the matched season
 
-             if anime_doc and anime_doc.get("seasons") and anime_doc["seasons"][0] and anime_doc["seasons"][0].get("episodes") and anime_doc["seasons"][0]["episodes"][0]:
-                 anime_name_for_menu = anime_doc.get("name", "Anime Name Unknown")
-                 season_data = anime_doc["seasons"][0]
-                 episode_data_for_menu = season_data.get("episodes", [])[0] # The episode dictionary
-                 # Need to sort file versions within episode data for consistent display order? Or MongoDB query/projection can sort?
-                 # Let's sort the list in app logic if necessary
-                 # episode_data_for_menu['files'].sort(key=lambda f: f.get('quality_resolution', '')) # Example sort
+             anime_doc = await MongoDB.anime_collection().find_one(filter_query, projection)
 
-                 await asyncio.sleep(1) # Short delay after confirmation message
-                 await display_episode_management_menu(client, callback_query.message, anime_name_for_menu, season_number, episode_number, episode_data_for_menu) # Display using updated data
+             if anime_doc and anime_doc.get("seasons") and anime_doc["seasons"][0]:
+                  anime_name = anime_doc.get("name", "Anime Name Unknown")
+                  season_data = anime_doc["seasons"][0]
+                  episodes_list = season_data.get("episodes", []) # Episodes of this season
+                  # Find the correct episode doc (will have updated files array)
+                  updated_episode_doc = next((ep for ep in episodes_list if ep.get("episode_number") == episode_number), None)
+
+                  if updated_episode_doc:
+                       await asyncio.sleep(1) # Short delay before menu
+                       await display_episode_management_menu(client, callback_query.message, anime_name, season_number, episode_number, updated_episode_doc)
+                  else:
+                       content_logger.error(f"Failed to find updated episode document after removing file version for admin {user_id}. Anime ID: {anime_id_str}, S:{season_number}, E:{episode_number}.", exc_info=True)
+                       # Clear state and prompt for navigation
+                       await client.send_message(chat_id, "💔 Removed file version, but failed to load episode management menu. Please navigate back.", parse_mode=config.PARSE_MODE)
+                       await clear_user_state(user_id); await manage_content_command(client, callback_query.message) # Offer to restart CM
+
 
              else:
-                  content_logger.error(f"Failed to re-fetch episode data {anime_id_str}/S{season_number}E{episode_number} after file version removal for admin {user_id}.")
-                  await client.send_message(chat_id, "💔 Removed file version, but failed to reload episode menu.", parse_mode=config.PARSE_MODE)
-                  # State is set correctly. User can navigate back.
-                  await manage_content_command(client, callback_query.message); # Offer to restart CM
+                  # Failed to re-fetch anime/season after removing file version.
+                 content_logger.critical(f"FATAL: Failed to fetch anime/season document after removing file version for admin {user_id}: {anime_id_str}/S{season_number}.", exc_info=True)
+                 await client.send_message(chat_id, "💔 Removed file version, but a critical error occurred reloading data. Please navigate manually from Content Management menu.", parse_mode=config.PARSE_MODE)
+                 await clear_user_state(user_id); # Clear state
+                 await manage_content_command(client, callback_query.message); # Offer to restart CM
 
 
-        else: # Database update failed (matched 0 docs or modified 0). Anime/Season/Episode/File unique ID not found.
-             content_logger.warning(f"Admin {user_id} confirmed remove file version {file_unique_id_to_remove} but DB update failed (0 modified). Path or file unique ID incorrect?")
-             await edit_or_send_message(client, chat_id, message_id, "⚠️ File version not found or already removed.", disable_web_page_preview=True)
-             # State is SELECT_FILE_VERSION_TO_DELETE. Remain there? No, return to selection menu display which will reflect current DB state.
-             # The content_delete_file_version_select callback handles fetching current list and displaying selection menu.
-             await handle_delete_file_version_select_callback(client, callback_query.message, user_state, f"content_delete_file_version_select{config.CALLBACK_DATA_SEPARATOR}{anime_id_str}{config.CALLBACK_DATA_SEPARATOR}{season_number}{config.CALLBACK_DATA_SEPARATOR}{episode_number}")
+        else: # Success = False (Database method returned False - likely match/modified count was 0)
+            content_logger.warning(f"Admin {user_id} confirmed remove file version {file_unique_id_to_remove} but DB modified 0 docs. Version not found?")
+            await edit_or_send_message(client, chat_id, message_id, "⚠️ File version was not found or already removed.", disable_web_page_preview=True)
+            # Go back to the file version deletion selection menu, which will show current state
+            # The callback to initiate selection also handles fetching and displaying.
+            # Need episode context to rebuild the callback data.
+            episode_context_callback_data = f"content_delete_file_version_select{config.CALLBACK_DATA_SEPARATOR}{anime_id_str}{config.CALLBACK_DATA_SEPARATOR}{season_number}{config.CALLBACK_DATA_SEPARATOR}{episode_number}"
+            await handle_delete_file_version_select_callback(client, callback_query.message, user_state, episode_context_callback_data) # Re-display selection menu
 
 
     except ValueError:
-         content_logger.warning(f"Admin {user_id} invalid callback data format for final remove file version: {data}")
+         content_logger.warning(f"Admin {user_id} invalid callback data format for confirm remove file version: {data}")
          await edit_or_send_message(client, chat_id, message_id, "🚫 Invalid data in callback.", disable_web_page_preview=True)
-         # State is SELECT_FILE_VERSION_TO_DELETE, stay.
+         # State is SELECT_FILE_VERSION_TO_DELETE, stay there.
 
     except Exception as e:
-        content_logger.critical(f"FATAL error handling content_confirm_remove_file_version callback {data} for admin {user_id}: {e}", exc_info=True)
+         content_logger.critical(f"FATAL error handling content_confirm_remove_file_version callback {data} for admin {user_id}: {e}", exc_info=True)
+         await clear_user_state(user_id)
+         await edit_or_send_message(client, chat_id, message_id, ERROR_OCCURRED, disable_web_page_preview=True)
+         await manage_content_command(client, callback_query.message)
+
+
+# --- Implement Callback to Cancel File Version Deletion Selection ---
+# Catches callbacks content_cancel_delete_file_version_select|<anime_id>|<season>|<ep>
+@Client.on_callback_query(filters.regex(f"^content_cancel_delete_file_version_select{config.CALLBACK_DATA_SEPARATOR}.*{config.CALLBACK_DATA_SEPARATOR}.*{config.CALLBACK_DATA_SEPARATOR}.*") & filters.private)
+async def handle_cancel_delete_file_version_callback(client: Client, callback_query: CallbackQuery):
+    """Handles admin clicking Cancel during file version deletion selection."""
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+    message_id = callback_query.message.id
+    data = callback_query.data # content_cancel_delete_file_version_select|<anime_id>|<season>|<ep>
+
+    if user_id not in config.ADMIN_IDS: await client.answer_callback_query(message.id, "🚫 Unauthorized."); return
+    try: await client.answer_callback_query(message.id, strings.ACTION_CANCELLED) # Toast
+    except Exception: pass
+
+
+    user_state = await get_user_state(user_id)
+    # State should be SELECT_FILE_VERSION_TO_DELETE
+    if not (user_state and user_state.handler == "content_management" and user_state.step == ContentState.SELECT_FILE_VERSION_TO_DELETE):
+         content_logger.warning(f"Admin {user_id} in unexpected state {user_state.handler}:{user_state.step} clicking cancel delete file version. Data: {data}")
+         await edit_or_send_message(client, chat_id, message_id, "🔄 Invalid state for cancelling file version deletion.", disable_web_page_preview=True)
+         await clear_user_state(user_id); await manage_content_command(client, callback_query.message); return
+
+    try:
+        # Clear the SELECT_FILE_VERSION_TO_DELETE state and temporary data
+        # Return to the MANAGING_EPISODE_MENU state
+        # Get episode context from state data (needed for returning to episode menu)
+        anime_id_str = user_state.data.get("anime_id")
+        season_number = user_state.data.get("season_number")
+        episode_number = user_state.data.get("episode_number")
+        anime_name = user_state.data.get("anime_name") # Anime name for display
+
+        if not all([anime_id_str, season_number is not None, episode_number is not None, anime_name]):
+             content_logger.error(f"Admin {user_id} cancelling file version delete, but missing episode context from state: {user_state.data}")
+             await edit_or_send_message(client, chat_id, message_id, "💔 Error: Missing episode context in state data to return to menu. Process cancelled.", disable_web_page_preview=True)
+             await clear_user_state(user_id); return
+
+        # Reset state to MANAGING_EPISODE_MENU
+        updated_state_data = {k: v for k, v in user_state.data.items() if k not in ["file_versions"]} # Remove file list from state
+        await set_user_state(user_id, "content_management", ContentState.MANAGING_EPISODE_MENU, data=updated_state_data)
+
+
+        # Fetch the current episode data to redisplay the menu
+        # Need to refetch to ensure file list displayed reflects actual data if changes occurred between clicks
+        filter_query = {"_id": ObjectId(anime_id_str), "seasons.season_number": season_number}
+        projection = {"name": 1, "seasons.$": 1} # Project name and the matched season
+
+        anime_doc = await MongoDB.anime_collection().find_one(filter_query, projection)
+
+        if anime_doc and anime_doc.get("seasons") and anime_doc["seasons"][0]:
+             season_data = anime_doc["seasons"][0]
+             episodes_list = season_data.get("episodes", []) # Episodes of this season
+             current_episode_doc = next((ep for ep in episodes_list if ep.get("episode_number") == episode_number), None)
+
+             if current_episode_doc:
+                  await edit_or_send_message(client, chat_id, message_id, strings.ACTION_CANCELLED, parse_mode=config.PARSE_MODE) # Edit previous message to confirm cancel
+                  await asyncio.sleep(1) # Short delay
+                  # Display the episode management menu using the helper
+                  await display_episode_management_menu(client, callback_query.message, anime_name, season_number, episode_number, current_episode_doc)
+             else: raise Exception("Episode not found after cancelling file version delete.")
+
+        else: raise Exception("Anime/Season not found after cancelling file version delete.")
+
+
+    except Exception as e:
+        content_logger.error(f"FATAL error handling content_cancel_delete_file_version callback {data} for admin {user_id}: {e}", exc_info=True)
         await clear_user_state(user_id)
         await edit_or_send_message(client, chat_id, message_id, ERROR_OCCURRED, disable_web_page_preview=True)
         await manage_content_command(client, callback_query.message)
+
+# --- Implement Admin View All Anime List (Initial) ---
+
+# Callback: content_view_all_anime_list (from CM main menu)
+# Needs to fetch and display a paginated list of anime for admin selection.
+# Needs buttons for each anime, pagination, and back/home buttons.
+# Selecting an anime should call handle_edit_existing_anime_selection to jump into its management menu.
