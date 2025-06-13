@@ -9,9 +9,17 @@ from pyrogram.errors import ApiIdInvalid, ApiIdPublishedFlood, AuthKeyUnregister
 from pyrogram.enums import ParseMode
 
 from dotenv import load_dotenv
+from telegram.ext import ApplicationBuilder, CommandHandler
 
-# No aiohttp imports needed now for health check
+def run_bot():
+    app = ApplicationBuilder().token("YOUR_BOT_TOKEN").build()
 
+    async def start(update, context):
+        await update.message.reply_text("Hello! I'm alive.")
+
+    app.add_handler(CommandHandler("start", start))
+    app.run_polling()
+    
 
 # --- Configure basic logging immediately (as before) ---
 logging.basicConfig(
@@ -298,14 +306,3 @@ if __name__ == "__main__":
          print("DEBUG: --- Step 7.3: Exiting __main__ block. ---")
          main_logger.info("Application process finished.");
          # Ensure logs are flushed before process exits if needed (basicConfig to stdout helps this).
-
-from telegram.ext import ApplicationBuilder, CommandHandler
-
-def run_bot():
-    app = ApplicationBuilder().token("YOUR_BOT_TOKEN").build()
-
-    async def start(update, context):
-        await update.message.reply_text("Hello! I'm alive.")
-
-    app.add_handler(CommandHandler("start", start))
-    app.run_polling()
