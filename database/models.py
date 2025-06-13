@@ -135,3 +135,23 @@ def model_to_mongo_dict(model: BaseModel) -> Dict[str, Any]:
     # and we want pymongo/motor to handle _id generation if not provided.
     # If _id IS provided (as PyObjectId), it will be included and pymongo uses it.
     return model.dict(by_alias=True, exclude_none=True)
+
+class UserState(BaseModel):
+    id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
+    user_id: int # Telegram User ID (Unique Index needed)
+    handler: str # e.g., "content_management", "request" - identifies which process
+    step: str    # e.g., "awaiting_anime_name", "selecting_genres" - current position in the process
+    data: Dict[str, Any] = Field(default_factory=dict) # Dictionary to store any necessary data for the state (e.g., temp anime name)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc)) # Track how long user has been in state
+
+    class Config:
+        json_encoders = {ObjectId: str}
+
+    def update_state(self, handler: str, step: str, data: Dict[str, Any] = None):
+        """Helper to update the state instance."""
+        self.handler = handler
+        self.step = step
+        if data is not None:
+             self.data.update(data) # Merge or update data
+        self.updated_at = datetime.now(timezone.utc)
