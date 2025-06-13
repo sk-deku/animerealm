@@ -1,0 +1,28 @@
+# Environments
+.env
+.venv
+venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+build/
+dist/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+
+# IDEs
+.vscode/
+.idea/
+
+# Logs and Databases (Local Development)
+*.log
+data/
+*.db
+
+# Specific to project if any large files are cached locally
+# Add directories where large temporary files might be stored by Pyrogram
