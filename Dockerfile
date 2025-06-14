@@ -32,8 +32,12 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy the rest of the application code into the working directory (/app)
 # This includes main.py, app.py, Procfile, handlers, database folders etc.
-COPY . /app
+#COPY . /app
 
 # EXPOSE the port that the health check server (Flask/Gunicorn) listens on
-EXPOSE 8080
+#EXPOSE 8080
 
+# ... previous RUN pip install (if still in place, or simplify/comment)
+# Remove COPY . .
+# Remove EXPOSE 8080
+CMD ["python", "-c", "import sys; print('Container CMD Reached!', file=sys.stdout); print('Python version:', sys.version, file=sys.stdout); sys.exit(0)"]
