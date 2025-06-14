@@ -21,7 +21,7 @@ class PyObjectId(ObjectId):
         return v # Already an ObjectId
 
     @classmethod
-    def __modify_schema__(cls, field_schema: Dict[str, Any]):
+    def __get_pydantic_json_schema__(cls, field_schema: Dict[str, Any]):
         field_schema.update(type="string")
 
 
