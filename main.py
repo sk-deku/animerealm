@@ -48,10 +48,6 @@ if not MONGO_URI: main_logger.critical("MONGO_URI environment variable not set! 
 
 # Admin IDs (comma separated)
 ADMIN_IDS_STR = os.getenv("ADMIN_IDS", ""); ADMIN_IDS = [];
-if ADMIN_IDS_STR:
-    try: ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS_STR.split(',') if admin_id.strip()]; if not ADMIN_IDS: raise ValueError("ADMIN_IDS is empty after parsing");
-    except ValueError as e: main_logger.critical(f"Invalid format for ADMIN_IDS environment variable: {e}. Must be comma-separated integers."); sys.exit(1);
-else: main_logger.warning("ADMIN_IDS environment variable is not set. No admin users defined.");
 
 # Owner ID (single)
 OWNER_ID_STR = os.getenv("OWNER_ID"); OWNER_ID = None;
