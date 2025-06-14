@@ -485,7 +485,7 @@ async def profile_command_or_callback(client: Client, update: Union[Message, Cal
              # Button for notification settings (callback will route to watchlist handler or settings handler)
              # Show current status roughly on button
              # Check if ANY notification type is true
-             notify_status = "✅ On" if any(user.notification_settings.values()) else "❌ Off"
+             notify_status == "✅ On" if any(user.notification_settings.values()) else "❌ Off"
              InlineKeyboardButton(
                  BUTTON_NOTIFICATION_SETTINGS.format(status=notify_status),
                  callback_data="profile_notification_settings_menu" # Define this callback later
