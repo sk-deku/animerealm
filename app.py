@@ -1,4 +1,9 @@
 from flask import Flask
+import logging
+
+# Basic Flask logger for debugging Flask itself
+app_logger = logging.getLogger(__name__)
+app_logger.setLevel(logging.INFO)
 
 app = Flask(__name__)
 
