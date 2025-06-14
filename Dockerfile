@@ -1,38 +1,16 @@
-# Use a Python image including common build dependencies
-FROM python:3.11-buster
+# Don't Remove Credit @VJ_Botz
+# Subscribe YouTube Channel For Amazing Bot @Tech_VJ
+# Ask Doubt on telegram @KingVJ01
 
-# Install necessary system packages for Python libraries (as identified by your RUN command)
-# Keep this RUN command from your original Dockerfile, it was likely correct for some deps.
-RUN apt update && apt upgrade -y && \
-    apt install -y \
-        git \
-        curl \
-        ffmpeg \
-        gcc \
-        python3-dev \
-        libffi-dev \
-        libssl-dev \
-        build-essential \
-        # Add any other identified OS dependencies here
-        && apt clean \
-        && rm -rf /var/lib/apt/lists/*
+FROM python:3.10.8-slim-buster
 
-# Upgrade pip
-RUN pip install -U pip
+RUN apt update && apt upgrade -y
+RUN apt install git -y
+COPY requirements.txt /requirements.txt
 
-# Set the working directory *before* copying requirements
-WORKDIR /app # Set /app as the working directory
-
-# Copy the requirements file *before* installing, leverage Docker cache
-COPY requirements.txt /app/requirements.txt
-
-# Install Python dependencies from requirements.txt
-# Ensure this uses the /app path
-RUN pip install --no-cache-dir -r /app/requirements.txt
-
-# Copy the rest of the application code into the working directory (/app)
-# This includes main.py, app.py, Procfile, handlers, database folders etc.
-COPY . /app
-
-# EXPOSE the port that the health check server (Flask/Gunicorn) listens on
-EXPOSE 8080
+RUN cd /
+RUN pip3 install -U pip && pip3 install -U -r requirements.txt
+RUN mkdir /animerealm
+WORKDIR /animerealm
+COPY . /animerealm
+CMD ["python", "main.py"]
