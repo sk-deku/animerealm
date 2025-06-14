@@ -78,13 +78,6 @@ try:
 
     # --- Load Other Configs ---
     ADMIN_IDS_STR = os.getenv("ADMIN_IDS", ""); ADMIN_IDS = []; main_logger.info(f"Parsing ADMIN_IDS: '{ADMIN_IDS_STR}'");
-    if ADMIN_IDS_STR:
-        try: ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS_STR.split(',') 
-            if admin_id.strip()]; 
-            if not ADMIN_IDS: main_logger.warning("ADMIN_IDS parsed empty."); 
-            else: main_logger.info(f"Parsed ADMIN_IDS: {ADMIN_IDS}");
-        except ValueError as e: main_logger.critical(f"VALIDATION FAILED: Invalid ADMIN_IDS format: {e}."); sys.exit(1);
-    else: main_logger.info("ADMIN_IDS not set.");
 
     OWNER_ID_STR = os.getenv("OWNER_ID"); OWNER_ID = None; main_logger.info(f"Parsing OWNER_ID: '{OWNER_ID_STR}'");
     if OWNER_ID_STR:
