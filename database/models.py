@@ -86,7 +86,7 @@ class Anime(BaseModel):
 
 
     class Config:
-        allow_population_by_field_name = True # Allow instantiation with 'id' as well as '_id'
+        validate_by_name = True # Allow instantiation with 'id' as well as '_id'
         arbitrary_types_allowed = True
         json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()} # How to encode to JSON
 
@@ -110,7 +110,7 @@ class User(BaseModel):
 
 
     class Config:
-        allow_population_by_field_name = True
+        validate_by_name = True
         arbitrary_types_allowed = True
         json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()}
 
@@ -125,7 +125,7 @@ class Request(BaseModel):
     admin_notes: Optional[str] = None # Optional notes added by an admin (e.g., why it's unavailable)
 
     class Config:
-        allow_population_by_field_name = True
+        validate_by_name = True
         arbitrary_types_allowed = True
         json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()}
 
@@ -141,8 +141,8 @@ class GeneratedToken(BaseModel):
      created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc)) # Timestamp when generated
 
 
-     class Config:
-        allow_population_by_field_name = True
+    class Config:
+        validate_by_name = True
         arbitrary_types_allowed = True
         json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()}
 
@@ -168,7 +168,7 @@ class UserState(BaseModel):
 
 
     class Config:
-        allow_population_by_field_name = True
+        validate_by_name = True
         arbitrary_types_allowed = True
         json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()}
 
