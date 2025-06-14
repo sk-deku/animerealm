@@ -6,6 +6,7 @@ from pymongo.errors import ConnectionFailure, OperationFailure, ConfigurationErr
 from pymongo.write_concern import WriteConcern
 from typing import Optional, List, Dict, Any, Union
 from datetime import datetime, timezone
+from bson import ObjectId
 
 # Import constants from config
 from config import DB_NAME, STATE_COLLECTION_NAME
