@@ -1,17 +1,16 @@
 pyrogram[listen]==2.0.* # Using listen feature for updates
-python-telegram-bot==20.7
+# REMOVE THIS LINE: python-telegram-bot==20.7 
 tgcrypto
 pymongo>=4.5,<5
 motor>=3.5,<3.8
 python-dotenv
-fuzzywuzzy[speedup]==0.18.* # Using speedup version for Levenshtein
+fuzzywuzzy[speedup]==0.18.*
 python-Levenshtein
-dnspython # For MongoDB Atlas
-Pillow # Optional, if image processing is needed (e.g., welcome image resize)
-requests # Sometimes needed for shortener APIs or external interactions
-aiohttp==3.8.6
-#Flask==2.2.2
+dnspython
+Pillow # Optional, if image processing is needed (e.g., for welcome image resize)
+requests # Optional - Only if needed for *sync* HTTP calls outside asyncio
+aiohttp==3.8.6 # Recommended for *async* HTTP calls
+Flask==3.0.3 # Must match the version Flask used to build your app.py
 gunicorn==20.1.0
 pydantic
-Flask==3.0.3
-werkzeug==3.0.3
+werkzeug==3.0.3 # Flask dependency
