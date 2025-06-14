@@ -8,5 +8,5 @@ def hello_world():
 
     return'DEKU'
 
-if name=="main":
+if __name__ == "__main__":
     app.run()
