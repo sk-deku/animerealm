@@ -30,7 +30,7 @@ from strings import (
 # Import database models and utilities
 from database.mongo_db import MongoDB # Access the MongoDB class instance methods
 # Import specific DB state management helper functions
-from database.mongo_db import get_user_state, set_user_state, clear_user_state
+#from database.mongo_db import get_user_state, set_user_state,clear_user_state
 
 # Import required Pydantic models
 from database.models import User, UserState # User model for data handling, UserState for type hinting
@@ -326,7 +326,7 @@ async def start_command_or_home_callback(client: Client, update: Union[Message, 
     current_state = await get_user_state(user_id)
     if current_state:
         # Add specific exceptions if needed? Like 'search_active' state? No, clearing all on HOME is cleaner.
-         await clear_user_state(user_id)
+         await MongoDB.clear_user_state(user_id)
          common_logger.debug(f"Cleared state {current_state.handler}:{current_state.step} for user {user_id} on return to main menu.")
 
 
@@ -536,9 +536,9 @@ async def handle_plain_text_input(client: Client, message: Message):
 
     # --- Check for cancellation request (Universal Escape Hatch) ---
     if text.lower() == CANCEL_ACTION.lower():
-        user_state = await get_user_state(user_id)
+        user_state = await MongoDB.get_user_state(user_id)
         if user_state:
-            await clear_user_state(user_id)
+            await MongoDB.clear_user_state(user_id)
             common_logger.info(f"User {user_id} cancelled state {user_state.handler}:{user_state.step}.")
             await message.reply_text(ACTION_CANCELLED, parse_mode=config.PARSE_MODE)
             # Consider re-displaying the relevant menu the user was trying to leave?
@@ -550,7 +550,7 @@ async def handle_plain_text_input(client: Client, message: Message):
 
 
     # --- Retrieve User State to Determine Context ---
-    user_state = await get_user_state(user_id)
+    user_state = await MongoDB.get_user_state(user_id)
 
     # --- Route Input Based on User State ---
     if user_state:
@@ -574,14 +574,14 @@ async def handle_plain_text_input(client: Client, message: Message):
                 # State exists, but the handler doesn't exist or is not configured to handle text input for this step.
                 # This indicates a logic error in state transitions or an outdated state document.
                 common_logger.error(f"User {user_id} in state {user_state.handler}:{user_state.step} sent text input, but routing not implemented or state is bad. Clearing state.", exc_info=True)
-                await clear_user_state(user_id) # Clear state to prevent user from getting stuck
+                await MongoDB.MongoDB.clear_user_state(user_id) # Clear state to prevent user from getting stuck
                 await message.reply_text("🤷 Unexpected state. Your previous process was cancelled.", parse_mode=config.PARSE_MODE)
 
 
         except Exception as e:
             common_logger.error(f"Error handling routed text input for user {user_id} in state {user_state.handler}:{user_state.step}: {e}", exc_info=True)
             # On unexpected errors during state handling, clear the state and inform user.
-            await clear_user_state(user_id)
+            await MongoDB.MongoDB.clear_user_state(user_id)
             await message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
 
 
@@ -630,7 +630,7 @@ async def handle_media_input(client: Client, message: Message):
 
 
     # Retrieve user state to determine if media input is expected
-    user_state = await get_user_state(user_id)
+    user_state = await MongoDB.get_user_state(user_id)
 
     # Check if the user is currently in a content management state that specifically awaits a file type
     # Currently, only Admin Content Management expects media files.
@@ -668,7 +668,7 @@ async def handle_media_input(client: Client, message: Message):
             # Log any unexpected errors during the specific file handler function call
             common_logger.error(f"Error handling media input for user {user_id} in content management state {user_state.step}: {e}", exc_info=True)
             # Clear state and inform admin about the error to prevent them getting stuck
-            await clear_user_state(user_id)
+            await MongoDB.MongoDB.clear_user_state(user_id)
             await message.reply_text(ERROR_OCCURRED, parse_mode=config.PARSE_MODE)
 
 
@@ -701,7 +701,7 @@ async def message_error_handler(client: Client, message: Message):
 
 
     # Retrieve user state as this might be related to an input state issue
-    user_state = await get_user_state(message.from_user.id)
+    user_state = await MongoDB.get_user_state(message.from_user.id)
 
     # Only reply if it seems like the user was trying to interact and fell through.
     # Avoid replying to every bot status update or forwarded message not relevant.
@@ -712,7 +712,7 @@ async def message_error_handler(client: Client, message: Message):
         if user_state:
              common_logger.error(f"Unhandled message received while user {message.from_user.id} in state {user_state.handler}:{user_state.step}.", exc_info=True)
              # It might be best to clear the state on such a generic fallback after attempting handlers in group 1.
-             await clear_user_state(message.from_user.id) # Clear potentially bad state
+             await MongoDB.MongoDB.clear_user_state(message.from_user.id) # Clear potentially bad state
              await message.reply_text("💔 An unexpected issue occurred in your current process. It has been cancelled. Please try again from the beginning.", parse_mode=config.PARSE_MODE)
 
         else:
