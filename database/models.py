@@ -86,9 +86,9 @@ class Anime(BaseModel):
 
 
     class Config:
-        validate_by_name = True # Allow instantiation with 'id' as well as '_id'
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()} # How to encode to JSON
+         validate_by_name = True # Allow instantiation with 'id' as well as '_id'
+         arbitrary_types_allowed = True
+         json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()} # How to encode to JSON
 
 
 # Model for User entry (Top Level Collection)
@@ -110,9 +110,9 @@ class User(BaseModel):
 
 
     class Config:
-        validate_by_name = True
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()}
+         validate_by_name = True
+         arbitrary_types_allowed = True
+         json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()}
 
 
 # Model for Anime Request entry (Top Level Collection)
@@ -125,9 +125,9 @@ class Request(BaseModel):
     admin_notes: Optional[str] = None # Optional notes added by an admin (e.g., why it's unavailable)
 
     class Config:
-        validate_by_name = True
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()}
+         validate_by_name = True
+         arbitrary_types_allowed = True
+         json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()}
 
 
 # Model for Generated Token entry (for the link redemption - Top Level Collection)
@@ -140,11 +140,10 @@ class GeneratedToken(BaseModel):
      expires_at: datetime # Timestamp when the link expires
      created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc)) # Timestamp when generated
 
-
     class Config:
-        validate_by_name = True
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()}
+         validate_by_name = True
+         arbitrary_types_allowed = True
+         json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()}
 
 
 # Model for tracking User State in multi-step processes (Top Level Collection)
@@ -168,9 +167,9 @@ class UserState(BaseModel):
 
 
     class Config:
-        validate_by_name = True
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()}
+         validate_by_name = True
+         arbitrary_types_allowed = True
+         json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()}
 
 
 # Helper function to convert a Pydantic model instance to a dictionary suitable for MongoDB insert/update
