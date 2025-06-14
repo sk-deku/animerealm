@@ -156,6 +156,14 @@ async def main():
     main_logger.info("Bot is now running and listening for updates, health server is live.")
     await asyncio.Future() # This will keep the main loop running until it's explicitly cancelled
 
+app = Flask(__name__)
+
+@app.route('/')
+
+def hello_world():
+
+    return'DEKU'
+
 
 if __name__ == "__main__":
     print("Starting bot...")
