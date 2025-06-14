@@ -400,97 +400,94 @@ class MongoDB:
 async def init_db(uri: str):
     """
     Initializes the database connection and creates/ensures necessary indices.
-    Handles connection and indexing errors with critical logging and exits.
+    Handles connection and indexing errors.
     """
-    main_logger = logging.getLogger("main") # Get main logger for messages going to stdout initially
+    main_logger = logging.getLogger("main") # Get main logger to access main's messages in logs
     db_logger.info("Database initialization sequence started.");
 
     try:
-        # Attempt connection using the MongoDB class method
         db_logger.info("Calling MongoDB.connect to establish connection.");
         await MongoDB.connect(uri, DB_NAME); # Connect method handles logging connection success/failure
+        main_logger.info("Database connection reported success by MongoDB.connect. Proceeding to indexing.");
+        db_logger.info("Database connection confirmed by MongoDB.connect. Ready for operations."); # More specific log
 
         # Connection is successful, get database instance for indexing
-        db_logger.info("Database connection reported success by MongoDB.connect. Proceeding to indexing.");
-        db = MongoDB.get_db(); # Should not raise ConnectionFailure here if connect succeeded
-
+        db_logger.info("Getting database instance for indexing.");
+        db = MongoDB.get_db(); # This will raise ConnectionFailure if connect failed
 
         db_logger.info("Creating/Ensuring MongoDB indices for performance and constraints...");
         index_coroutines = [
-            db.users_collection().create_index([("user_id", 1)], unique=True),
-            db.users_collection().create_index([("tokens", -1)]),
-            db.users_collection().create_index([("download_count", -1)]),
-            db.users_collection().create_index([("premium_status", 1)]),
-            db.users_collection().create_index([("watchlist", 1)]),
-            db.users_collection().create_index([("join_date", 1)]),
+            # User collection indices - **CORRECTED CALLS HERE**
+            # Use db["collection_name"].create_index() instead of db.collection_name().create_index()
+            db["users"].create_index([("user_id", 1)], unique=True),
+            db["users"].create_index([("tokens", -1)]),
+            db["users"].create_index([("download_count", -1)]),
+            db["users"].create_index([("premium_status", 1)]),
+            db["users"].create_index([("watchlist", 1)]),
+            db["users"].create_index([("join_date", 1)]),
 
-            db.anime_collection().create_index([("name", 1)], unique=True, collation={'locale': 'en', 'strength': 2}), # Case-insensitive unique
-            db.anime_collection().create_index([("name", "text")]),
-            db.anime_collection().create_index([("overall_download_count", -1)]),
-            db.anime_collection().create_index([("genres", 1)]),
-            db.anime_collection().create_index([("release_year", 1)]),
-            db.anime_collection().create_index([("status", 1)]),
-            db.anime_collection().create_index([("seasons.season_number", 1)]), # Index on season number within array
-            db.anime_collection().create_index([("seasons.episodes.episode_number", 1)]), # Index on episode number within nested array
-            db.anime_collection().create_index([("seasons.episodes.files.file_unique_id", 1)]),
-            db.anime_collection().create_index([("seasons.episodes.release_date", 1)]),
+            # Anime collection indices - **CORRECTED CALLS HERE**
+            db["anime"].create_index(
+                 [("name", 1)],
+                 unique=True,
+                 collation={'locale': 'en', 'strength': 2}
+            ),
+            db["anime"].create_index([("name", "text")]),
+            db["anime"].create_index([("overall_download_count", -1)]),
+            db["anime"].create_index([("genres", 1)]),
+            db["anime"].create_index([("release_year", 1)]),
+            db["anime"].create_index([("status", 1)]),
+            db["anime"].create_index([("seasons.season_number", 1)]),
+            db["anime"].create_index([("seasons.episodes.episode_number", 1)]),
+            db["anime"].create_index([("seasons.episodes.files.file_unique_id", 1)]),
+            db["anime"].create_index([("seasons.episodes.release_date", 1)]),
 
-            db.requests_collection().create_index([("user_id", 1)]),
-            db.requests_collection().create_index([("status", 1)]),
-            db.requests_collection().create_index([("requested_at", 1)]),
-            db.requests_collection().create_index([("anime_name_requested", 1)]), # Add index on requested name for querying
-             # Index for linking admin notification message to request if needed:
-             db.requests_collection().create_index([("admin_message_id", 1)]),
+            # Requests collection indices - **CORRECTED CALLS HERE**
+            db["requests"].create_index([("user_id", 1)]),
+            db["requests"].create_index([("status", 1)]),
+            db["requests"].create_index([("requested_at", 1)]),
+            db["requests"].create_index([("anime_name_requested", 1)]),
+            db["requests"].create_index([("admin_message_id", 1)]),
 
 
-            db.generated_tokens_collection().create_index([("token_string", 1)], unique=True),
-            db.generated_tokens_collection().create_index([("generated_by_user_id", 1)]),
-            db.generated_tokens_collection().create_index([("expires_at", 1), ("is_redeemed", 1)]),
+            # Generated Tokens indices - **CORRECTED CALLS HERE**
+            db["generated_tokens"].create_index([("token_string", 1)], unique=True),
+            db["generated_tokens"].create_index([("generated_by_user_id", 1)]),
+            db["generated_tokens"].create_index([("expires_at", 1), ("is_redeemed", 1)]),
 
-            db.states_collection().create_index([("user_id", 1)], unique=True),
-            db.states_collection().create_index([("handler", 1), ("step", 1)]),
-            db.states_collection().create_index([("updated_at", 1)]),
+            # User State collection indices - **CORRECTED CALLS HERE**
+            db["user_states"].create_index([("user_id", 1)], unique=True),
+            db["user_states"].create_index([("handler", 1), ("step", 1)]),
+            db["user_states"].create_index([("updated_at", 1)]),
         ];
 
         db_logger.info(f"Executing {len(index_coroutines)} index creation tasks concurrently...");
-        # Use asyncio.gather to run all create_index operations in parallel
-        # return_exceptions=True prevents gathering from stopping on the first exception.
         results = await asyncio.gather(*index_coroutines, return_exceptions=True);
 
-        # Check results and log specific failures for index creation
         index_failures = False;
         for i, res in enumerate(results):
             if isinstance(res, Exception):
                  index_failures = True;
-                 # Log the failure, identify which index if possible using its properties or the original coroutine structure
                  try:
-                      index_key = index_coroutines[i].document.get('key') if hasattr(index_coroutines[i], 'document') else f"Index {i}"; # Get index key definition
+                      index_key = index_coroutines[i].document.get('key') if hasattr(index_coroutines[i], 'document') else f"Index {i}";
                       db_logger.error(f"INDEX CREATION FAILED: Index on {index_key} failed with error: {res}", exc_info=True);
-                      # Specific error types from pymongo.errors could be caught if detailed handling needed per type
-                 except Exception: # Fallback if identifying index fails
-                     db_logger.error(f"INDEX CREATION FAILED: Index task {i} failed: {res}", exc_info=True);
+                 except Exception: db_logger.error(f"INDEX CREATION FAILED: Index task {i} failed: {res}", exc_info=True);
 
         if index_failures:
-             db_logger.warning("One or more database indices failed to create. Check logs. Performance or data integrity constraints might be impacted.");
-             # Criticality of index failure depends on the index (e.g., unique index failure is critical)
-             # If a unique index failed, MongoDB.connect or an earlier create_index might have already raised.
-             # Assuming we log warnings here for non-critical index failures.
+             db_logger.warning("One or more database indices failed to create. Performance or unique constraints might be impacted.");
 
 
         db_logger.info("Database indexing process completed.");
+        main_logger.info("Database initialization complete.") # Final confirmation log in main_logger
+
 
     except ConnectionFailure as e:
-         # If connect method already failed with ConnectionFailure, it raised, and main() would have caught it and exited.
-         # This specific except might catch it again if connect failed in a weird way.
-         db_logger.critical(f"FATAL DB INIT FAILED: Database connection failed during initialization (after connect returned): {e}", exc_info=True); # Redundant but safer log
-         raise # Re-raise to stop startup in main()
-
+         db_logger.critical(f"FATAL DB INIT FAILED (ConnectionFailure): {e}", exc_info=True);
+         raise
     except OperationFailure as e:
-         # Catch OperationFailure from DB interactions during indexing (e.g., permissions)
-         db_logger.critical(f"FATAL DB INIT FAILED: Database operation error during indexing: {e}", exc_info=True);
-         raise # Re-raise to stop startup in main()
-
+         db_logger.critical(f"FATAL DB INIT FAILED (OperationFailure): {e}", exc_info=True);
+         raise
     except Exception as e:
-         # Catch any other errors during the entire init_db process (e.g., list comprehension failure, sorting error, gather error handling itself)
-         db_logger.critical(f"FATAL DB INIT FAILED: An unexpected error occurred during overall DB initialization process: {e}", exc_info=True);
-         raise # Re-raise to be caught by main.py's init_database error handling and halt bot startup
+         db_logger.critical(f"FATAL DB INIT FAILED (Unexpected Error During Indexing/Other): {e}", exc_info=True);
+         raise
+
