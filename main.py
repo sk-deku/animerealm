@@ -72,7 +72,7 @@ if LOG_CHANNEL_ID_STR:
 
 FILE_STORAGE_CHANNEL_ID_STR = os.getenv("FILE_STORAGE_CHANNEL_ID"); FILE_STORAGE_CHANNEL_ID = None;
 if FILE_STORAGE_CHANNEL_ID_STR:
-    try: FILE_STORAGE_CHANNEL_ID = int(FILE_STORAGE_CHANNEL_CHANNEL_ID_STR.strip()); main_logger.info(f"FILE_STORAGE_CHANNEL_ID is set to {FILE_STORAGE_CHANNEL_ID}.");
+    try: FILE_STORAGE_CHANNEL_ID = int(FILE_STORAGE_CHANNEL_ID_STR.strip()); main_logger.info(f"FILE_STORAGE_CHANNEL_ID is set to {FILE_STORAGE_CHANNEL_ID}.");
     except ValueError as e: main_logger.critical(f"Invalid format for FILE_STORAGE_CHANNEL_ID environment variable: {e}. Must be an integer."); sys.exit(1);
 else: main_logger.critical("FILE_STORAGE_CHANNEL_ID environment variable is NOT set. File handling features WILL NOT work correctly."); sys.exit(1);
 
