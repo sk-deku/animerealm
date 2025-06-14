@@ -9,7 +9,7 @@ RUN pip install -U pip
 
 COPY requirements.txt /requirements.txt
 
-RUN cd/
+RUN cd /
 
 RUN pip install -U-r requirements.txt
 
