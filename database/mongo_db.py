@@ -349,7 +349,8 @@ class MongoDB:
             if user_update_result.matched_count == 0: db_logger.warning(f"Increment user download count matched 0 users for ID {user_id}. User not found.");
             else: db_logger.debug(f"Incremented user download count for {user_id}. Matched: {user_update_result.matched_count}, Modified: {user_update_result.modified_count}.");
 
-            if not isinstance(anime_id, ObjectId): anime_id_obj = ObjectId(str(anime_id)); else: anime_id_obj = anime_id;
+            if not isinstance(anime_id, ObjectId): anime_id_obj = ObjectId(str(anime_id)); 
+            else: anime_id_obj = anime_id;
             anime_update_result = await cls.anime_collection().update_one({"_id": anime_id_obj}, {"$inc": {"overall_download_count": 1}, "$set": {"last_activity_at": datetime.now(timezone.utc)}});
             if anime_update_result.matched_count == 0: db_logger.warning(f"Increment anime overall download count matched 0 anime for ID {anime_id_obj}. Anime not found.");
             else: db_logger.debug(f"Incremented anime overall download count for {anime_id_obj}. Matched: {anime_update_result.matched_count}, Modified: {anime_update_result.modified_count}.");
