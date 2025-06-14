@@ -155,3 +155,8 @@ async def main():
     # Or simply let the asyncio event loop manage both tasks. Await an empty Future is simple.
     main_logger.info("Bot is now running and listening for updates, health server is live.")
     await asyncio.Future() # This will keep the main loop running until it's explicitly cancelled
+
+
+if __name__ == "__main__":
+    print("Starting bot...")
+    app.run() 
