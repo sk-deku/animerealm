@@ -1,5 +1,3 @@
-Python Based Docker
-
 FROM python:latest
 
 RUN apt update && apt upgrade -y
