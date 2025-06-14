@@ -1,15 +1,24 @@
-FROM python:3.10-slim-buster
+Python Based Docker
 
-WORKDIR /app
+FROM python:latest
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN apt update && apt upgrade -y
 
-COPY . .
+RUN apt install git curl python3-pip ffmpeg -y
 
-# Set up healthz file for Koyeb health check (optional)
-RUN echo "ok" > healthz
 
-EXPOSE 8080
+RUN pip install -U pip
 
-CMD ["python", "app.py"]
+COPY requirements.txt /requirements.txt
+
+RUN cd/
+
+RUN pip install -U-r requirements.txt
+
+RUN mkdir /animerealm
+
+WORKDIR /animerealm
+
+COPY start.sh/start.sh
+
+CMD [/bin/bash", "/start.sh"]
