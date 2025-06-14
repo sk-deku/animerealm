@@ -10,6 +10,8 @@ dnspython # For MongoDB Atlas
 Pillow # Optional, if image processing is needed (e.g., welcome image resize)
 requests # Sometimes needed for shortener APIs or external interactions
 aiohttp==3.8.6
-Flask==2.2.2
+#Flask==2.2.2
 gunicorn==20.1.0
 pydantic
+Flask==3.0.3
+werkzeug==3.0.3
