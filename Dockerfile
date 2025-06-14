@@ -11,7 +11,7 @@ COPY requirements.txt /requirements.txt
 
 RUN cd /
 
-RUN pip install -U-r requirements.txt
+RUN pip install -U -r requirements.txt
 
 RUN mkdir /animerealm
 
