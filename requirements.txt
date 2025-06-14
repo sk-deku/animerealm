@@ -10,7 +10,4 @@ dnspython
 Pillow # Optional, if image processing is needed (e.g., for welcome image resize)
 requests # Optional - Only if needed for *sync* HTTP calls outside asyncio
 aiohttp==3.8.6 # Recommended for *async* HTTP calls
-Flask==3.0.3 # Must match the version Flask used to build your app.py
-gunicorn==20.1.0
 pydantic
-werkzeug==3.0.3 # Flask dependency
