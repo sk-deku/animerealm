@@ -17,6 +17,6 @@ RUN mkdir /animerealm
 
 WORKDIR /animerealm
 
-COPY start.sh/start.sh
+COPY start.sh /start.sh
 
 CMD [/bin/bash", "/start.sh"]
