@@ -1,5 +1,5 @@
 # Use a Python image including common build dependencies
-FROM python:3.11-slim
+FROM python:3.11-buster
 
 # Install necessary system packages for Python libraries (as identified by your RUN command)
 # Keep this RUN command from your original Dockerfile, it was likely correct for some deps.
@@ -38,3 +38,4 @@ COPY . /app
 EXPOSE 8080
 
 # No CMD needed as Procfile will define the command on Koyeb.
+print('Dockerfile CMD Reached!
