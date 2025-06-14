@@ -141,9 +141,9 @@ class GeneratedToken(BaseModel):
      created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc)) # Timestamp when generated
 
     class Config:
-         validate_by_name = True
-         arbitrary_types_allowed = True
-         json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()}
+        validate_by_name = True
+        arbitrary_types_allowed = True
+        json_encoders = {ObjectId: str, datetime: lambda dt: dt.replace(tzinfo=timezone.utc).isoformat()}
 
 
 # Model for tracking User State in multi-step processes (Top Level Collection)
