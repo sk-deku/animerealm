@@ -4,6 +4,8 @@ from pyrogram.enums import ParseMode
 from datetime import datetime # Needed for some default field values
 
 
+DEBUG_MODE = "True"
+
 # Define a simple version for logging
 __version__ = "1.0.0"
 
@@ -12,10 +14,10 @@ __version__ = "1.0.0"
 PARSE_MODE = ParseMode.HTML
 
 # --- Admin Configuration (Loaded in main.py from .env, referenced here) ---
-# ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(','))) if os.getenv("ADMIN_IDS") else [] # Loaded in main
-# OWNER_ID = int(os.getenv("OWNER_ID")) if os.getenv("OWNER_ID") else None # Loaded in main
-# LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID")) if os.getenv("LOG_CHANNEL_ID") else None # Loaded in main
-# FILE_STORAGE_CHANNEL_ID = int(os.getenv("FILE_STORAGE_CHANNEL_ID")) if os.getenv("FILE_STORAGE_CHANNEL_ID") else None # Loaded in main
+ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "1775977570").split(','))) if os.getenv("ADMIN_IDS") else [] # Loaded in main
+OWNER_ID = int(os.getenv("OWNER_ID")) if os.getenv("OWNER_ID") else None # Loaded in main
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID")) if os.getenv("LOG_CHANNEL_ID") else None # Loaded in main
+FILE_STORAGE_CHANNEL_ID = int(os.getenv("FILE_STORAGE_CHANNEL_ID")) if os.getenv("FILE_STORAGE_CHANNEL_ID") else None # Loaded in main
 
 # Commands only accessible by the OWNER_ID
 OWNER_COMMANDS = ["/delete_all_data"]
@@ -30,14 +32,14 @@ STATE_COLLECTION_NAME = "user_states" # Collection name for state management
 # Maximum number of items per pagination page (e.g., anime list, episodes list)
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", 15)) # Load from env if available
 # Time limit for certain *admin input* operations (in seconds)
-# ADMIN_INPUT_TIMEOUT_SECONDS = 300 # This requires specific handler/state timeout logic, define if implementing.
+ADMIN_INPUT_TIMEOUT_SECONDS = 300 # This requires specific handler/state timeout logic, define if implementing.
 
 
 # --- User & Download Configuration ---
 # Initial tokens given to a user upon /start
 START_TOKENS = 5
 # Number of tokens awarded per successful token link redemption
-TOKENS_PER_REDEEM = int(os.getenv("TOKENS_PER_REDEEM", 1))
+TOKENS_PER_REDEEM = int(os.getenv("TOKENS_PER_REDEEM", 5))
 
 
 # --- Token Link Configuration ---
