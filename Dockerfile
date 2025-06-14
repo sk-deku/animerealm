@@ -37,5 +37,3 @@ COPY . /app
 # EXPOSE the port that the health check server (Flask/Gunicorn) listens on
 EXPOSE 8080
 
-# No CMD needed as Procfile will define the command on Koyeb.
-print('Dockerfile CMD Reached!
