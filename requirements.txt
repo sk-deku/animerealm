@@ -11,4 +11,4 @@ requests # Sometimes needed for shortener APIs or external interactions
 aiohttp==3.8.1
 Flask==2.2.2
 gunicorn==20.1.0
-motor==3.3.2
+motor
